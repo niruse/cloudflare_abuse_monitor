@@ -4,6 +4,6 @@
   "version": "1.0.0",
   "requirements": [],
   "dependencies": [],
-  "codeowners": ["@yourgithub"],
+  "codeowners": ["@niruse"],
   "config_flow": true
 }
