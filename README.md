@@ -65,7 +65,7 @@ Traffic Summary
 
 ## 📋 Create a Cloudflare IP List
 - Go to **Rules > IP Lists**
-- Create a list named: `block_ips`
+- Create a list named: `block_ips`. You can set any name.
 
 ---
 
