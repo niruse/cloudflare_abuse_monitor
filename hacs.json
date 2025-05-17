@@ -2,7 +2,12 @@
   "name": "Cloudflare Abuse Monitor",
   "content_in_root": false,
   "domain": "cloudflare_abuse_monitor",
+  "filename": "cloudflare_abuse_monitor/__init__.py",
+  "render_readme": true,
   "country": "IL",
-  "homeassistant": "2023.0.0",
-  "render_readme": true
+  "iot_class": "cloud_polling",
+  "homeassistant": "2023.1.0",
+  "file_size": 1024,
+  "source": "github",
+  "manifest_version": 1
 }
