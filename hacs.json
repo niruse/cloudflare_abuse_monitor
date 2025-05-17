@@ -4,7 +4,5 @@
   "domain": "cloudflare_abuse_monitor",
   "country": "IL",
   "homeassistant": "2023.0.0",
-  "render_readme": true,
-  "filename": "cloudflare_abuse_monitor.zip"
+  "render_readme": true
 }
-
