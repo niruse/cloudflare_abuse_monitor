@@ -230,3 +230,4 @@ Submit a PR or [open an issue](https://github.com/niruse/cloudflare_abuse_monito
 ---
 
 **Protect your Cloudflare zone with real-time threat monitoring — directly in Home Assistant!**
+  
