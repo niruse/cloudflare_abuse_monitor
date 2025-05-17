@@ -130,6 +130,10 @@ Action: Skip
 ## 📊 Cloudflare Abuse Monitor Dashboard
 
 This example **Lovelace dashboard** uses [`button-card`](https://github.com/custom-cards/button-card) to show your sensors.
+entity: sensor.cloudflare_traffic_summary  # 👉 Replace with your traffic summary sensor
+entity: sensor.cloudflare_skipped_ips      # 👉 Replace with your skipped ips sensor
+entity: sensor.cloudflare_listed_ips       # 👉 Replace with your listed ips sensor
+entity: sensor.cloudflare_high_risk_ips    # 👉 Replace with your high risks ips sensor
 
 ```yaml
 type: vertical-stack
