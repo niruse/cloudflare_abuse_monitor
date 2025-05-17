@@ -10,6 +10,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema({
     vol.Required("global_token"): str,
     vol.Required("abuseipdb_token"): str,
     vol.Required("abuse_confidence_score", default=100.0): vol.Coerce(float),
+    vol.Required("recheck_days", default=7): vol.All(vol.Coerce(int), vol.Range(min=1)),
 })
 
 class CloudflareAbuseMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -21,6 +22,8 @@ class CloudflareAbuseMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         self.api_key = None
         self.abuse_key = None
         self.abuse_score = None
+        self.scan_interval = 1
+        self.recheck_days = 7
         self.zones = []
         self.account_id = None
         self.zone_id = None
@@ -34,6 +37,7 @@ class CloudflareAbuseMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
             self.api_key = user_input["global_token"]
             self.abuse_key = user_input["abuseipdb_token"]
             self.abuse_score = user_input["abuse_confidence_score"]
+            self.recheck_days = user_input["recheck_days"]
 
             try:
                 response_data = await self.hass.async_add_executor_job(
@@ -106,11 +110,13 @@ class CloudflareAbuseMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                     "global_token": self.api_key,
                     "abuseipdb_token": self.abuse_key,
                     "abuse_confidence_score": self.abuse_score,
+                    "recheck_days": self.recheck_days,
                     "zone_id": self.zone_id,
                     "zone_name": self.zone_name,
                     "account_id": self.account_id,
                     "list_name": selected_list_name,
                     "list_id": selected_list_id,
+                    "mode": "Monitor",
                 },
             )
 
@@ -119,30 +125,37 @@ class CloudflareAbuseMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
     @staticmethod
     @callback
     def async_get_options_flow(config_entry):
-        """Return the options flow handler."""
         return CloudflareAbuseMonitorOptionsFlowHandler(config_entry)
+
 
 class CloudflareAbuseMonitorOptionsFlowHandler(config_entries.OptionsFlow):
     """Handle an options flow for Cloudflare Abuse Monitor."""
 
     def __init__(self, config_entry):
-        """Initialize options flow."""
         self.config_entry = config_entry
 
     async def async_step_init(self, user_input=None):
         """Manage the options."""
         if user_input is not None:
-            # Update the config entry with new options
             return self.async_create_entry(title="", data=user_input)
 
-        # Use existing options or fallback to data
         abuse_score = self.config_entry.options.get(
             "abuse_confidence_score",
             self.config_entry.data.get("abuse_confidence_score", 100.0)
         )
+        mode = self.config_entry.options.get(
+            "mode",
+            self.config_entry.data.get("mode", "Monitor")
+        )
+        recheck_days = self.config_entry.options.get(
+            "recheck_days",
+            self.config_entry.data.get("recheck_days", 7)
+        )
 
         options_schema = vol.Schema({
             vol.Required("abuse_confidence_score", default=abuse_score): vol.Coerce(float),
+            vol.Required("mode", default=mode): vol.In(["Active", "Monitor"]),
+            vol.Required("recheck_days", default=recheck_days): vol.All(vol.Coerce(int), vol.Range(min=1)),
         })
 
         return self.async_show_form(step_id="init", data_schema=options_schema)
