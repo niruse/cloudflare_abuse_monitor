@@ -9,7 +9,6 @@ import json
 
 SCAN_INTERVAL = timedelta(minutes=1)
 CHECKED_IPS_FILE = Path("/config/cloudflare_checked_ips.json")
-RECHECK_DAYS = 7
 
 DOMAIN = "cloudflare_abuse_monitor"
 
@@ -58,7 +57,6 @@ class CloudflareTrafficSummarySensor(CloudflareBaseSensor):
             self._attr_extra_state_attributes = {"error": str(e)}
 
 class CloudflareSkipIPsSensor(CloudflareBaseSensor):
-
     def __init__(self, entry: ConfigEntry):
         super().__init__(entry)
         data = entry.data
@@ -143,6 +141,9 @@ class CloudflareHighRiskIPsSensor(CloudflareBaseSensor):
             list_id = data["list_id"]
             abuseipdb_api_key = data["abuseipdb_token"]
             threshold = int(options.get("abuse_confidence_score", data.get("abuse_confidence_score", 100)))
+            recheck_days = int(options.get("recheck_days", data.get("recheck_days", 7)))
+            mode = options.get("mode", data.get("mode", "Monitor"))
+
             headers = {
                 "X-Auth-Email": email,
                 "X-Auth-Key": api_key,
@@ -184,7 +185,7 @@ class CloudflareHighRiskIPsSensor(CloudflareBaseSensor):
                 if last_checked:
                     try:
                         last_dt = datetime.fromisoformat(last_checked)
-                        if (now - last_dt).days < RECHECK_DAYS:
+                        if (now - last_dt).days < recheck_days:
                             should_check = False
                             updated_cache[ip] = last_checked
                             continue
@@ -204,22 +205,25 @@ class CloudflareHighRiskIPsSensor(CloudflareBaseSensor):
             with open(CHECKED_IPS_FILE, "w") as f:
                 json.dump(updated_cache, f, indent=2)
 
-            for ip_info in high_risk_ips:
-                ip = ip_info["ip"]
-                try:
-                    await self.hass.async_add_executor_job(
-                        add_ips_to_list,
-                        account_id,
-                        list_id,
-                        [ip],
-                        headers
-                    )
-                except Exception:
-                    pass
+            if mode == "Active":
+                for ip_info in high_risk_ips:
+                    ip = ip_info["ip"]
+                    try:
+                        await self.hass.async_add_executor_job(
+                            add_ips_to_list,
+                            account_id,
+                            list_id,
+                            [ip],
+                            headers
+                        )
+                    except Exception:
+                        pass
 
             self._attr_native_value = len(high_risk_ips)
             self._attr_extra_state_attributes = {
                 "abuse_confidence_score_threshold": threshold,
+                "recheck_days": recheck_days,
+                "mode": mode,
                 "high_risk_ip_list": [ip["ip"] for ip in high_risk_ips],
                 "ips_to_check": ips_to_check
             }
