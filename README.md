@@ -104,11 +104,13 @@ Action: Skip
   - Global API Key
   - AbuseIPDB API Key
   - AbuseIPDB score threshold under abuse_confidence_score
+  - Recheck Days → recheck_days (how many days to wait before rechecking the stored IPs)
   - Zone ID
   - List ID
   - Mode is automatically set to "Monitor" by default, but you can change it after completing the configuration
 
   
+
 
   Page for zone id
   
