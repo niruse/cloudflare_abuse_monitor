@@ -2,7 +2,7 @@
   "name": "Cloudflare Abuse Monitor",
   "content_in_root": false,
   "domain": "cloudflare_abuse_monitor",
-  "filename": "cloudflare_abuse_monitor/__init__.py",
+  "filename": "custom_components/cloudflare_abuse_monitor/__init__.py",
   "render_readme": true,
   "country": "IL",
   "iot_class": "cloud_polling",
