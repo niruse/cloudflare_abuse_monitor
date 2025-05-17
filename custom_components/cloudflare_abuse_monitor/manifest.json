@@ -5,7 +5,7 @@
   "requirements": [],
   "dependencies": [],
   "codeowners": ["@niruse"],
-  "config_flow": true
+  "config_flow": true,
   "documentation": "https://github.com/niruse/cloudflare_abuse_monitor",
   "issue_tracker": "https://github.com/niruse/cloudflare_abuse_monitor/issues",
 }
