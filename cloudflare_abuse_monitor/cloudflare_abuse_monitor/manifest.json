@@ -1,9 +1,0 @@
-{
-  "domain": "cloudflare_abuse_monitor",
-  "name": "Cloudflare Abuse Monitor",
-  "version": "1.0.0",
-  "requirements": [],
-  "dependencies": [],
-  "codeowners": ["@niruse"],
-  "config_flow": true
-}
