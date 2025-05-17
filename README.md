@@ -1,6 +1,12 @@
 # **Cloudflare Abuse Monitor**
 
+[![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://hacs.xyz)
+
 **Home Assistant: Cloudflare Threat Intelligence Integration**
+
+This is a **custom integration** for Home Assistant and is available via [HACS](https://hacs.xyz) by adding this repository as a custom source.
+
+---
 
 Welcome to **Cloudflare Abuse Monitor**!  
 This custom Home Assistant integration allows you to monitor and manage abusive IPs on your **Cloudflare** zone. It integrates:
@@ -15,10 +21,14 @@ This custom Home Assistant integration allows you to monitor and manage abusive 
 
 ## 🔍 Features
 
-- 📈 **Traffic Summary**: View total requests to your Cloudflare zone  
+- 📊 **Traffic Summary**: Track HTTP requests via Cloudflare GraphQL API.
 - 🚫 **Skipped IPs**: Track IPs skipped due to existing rules  
 - 📋 **Listed IPs**: Track IPs currently in your block list  
-- ⚠️ **High-Risk IPs**: Automatically detect & block based on AbuseIPDB score
+- ❌ **High-Risk IP Detection**: IPs with high AbuseIPDB scores are flagged and handled.
+- ✅ **Automatic Blocking**: Block malicious IPs by updating your Cloudflare firewall list.
+- 🔄 **Recheck IPs**: Optionally recheck IPs after X days (configurable).
+- ⚙️ **Custom Modes**: Choose between `Monitor` or `Active` mode for automatic blocking.
+- 🧠 **Smart Skipping**: Avoid rechecking IPs already handled.
 
 Each sensor updates at a configurable interval (*default: every minute*) and integrates seamlessly with your **Home Assistant dashboard**.
 
@@ -87,6 +97,12 @@ Action: Skip
 ---
 
 ## 🛠️ Installation
+
+## 📦 Installation via HACS
+
+1. Go to **HACS > Integrations > + Explore & Download Repositories**
+2. Click the **three dots menu > Custom repositories**
+3. Add this repository URL: 
 
 ### Manual Installation
 - Download the `cloudflare_abuse_monitor` folder  
