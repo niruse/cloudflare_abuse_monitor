@@ -1,11 +1,11 @@
 {
   "domain": "cloudflare_abuse_monitor",
   "name": "Cloudflare Abuse Monitor",
-  "version": "1.0.0",
+  "version": "1.1",
+  "config_flow": true,
   "requirements": [],
   "dependencies": [],
   "codeowners": ["@niruse"],
-  "config_flow": true,
   "iot_class": "cloud_polling",
   "integration_type": "service",
   "homeassistant": "0.104.0"
