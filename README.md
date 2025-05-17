@@ -103,6 +103,7 @@ Action: Skip
   - Cloudflare Email
   - Global API Key
   - AbuseIPDB API Key
+  - AbuseIPDB score threshold under abuse_confidence_score
   - Zone ID
   - List ID
 
