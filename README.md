@@ -21,14 +21,16 @@ This custom Home Assistant integration allows you to monitor and manage abusive 
 
 ## 🔍 Features
 
-- 📊 **Traffic Summary**: Track HTTP requests via Cloudflare GraphQL API.
-- 🚫 **Skipped IPs**: Track IPs skipped due to existing rules  
-- 📋 **Listed IPs**: Track IPs currently in your block list  
-- ❌ **High-Risk IP Detection**: IPs with high AbuseIPDB scores are flagged and handled.
 - ✅ **Automatic Blocking**: Block malicious IPs by updating your Cloudflare firewall list.
 - 🔄 **Recheck IPs**: Optionally recheck IPs after X days (configurable).
 - ⚙️ **Custom Modes**: Choose between `Monitor` or `Active` mode for automatic blocking.
 - 🧠 **Smart Skipping**: Avoid rechecking IPs already handled.
+
+## Sensors
+- 📊 **Traffic Summary**: Track HTTP requests via Cloudflare GraphQL API.
+- 🚫 **Skipped IPs**: Track IPs skipped due to existing rules  
+- 📋 **Listed IPs**: Track IPs currently in your block list  
+- ❌ **High-Risk IP Detection**: IPs with high AbuseIPDB scores are flagged and handled.
 
 Each sensor updates at a configurable interval (*default: every minute*) and integrates seamlessly with your **Home Assistant dashboard**.
 
