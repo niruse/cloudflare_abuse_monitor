@@ -106,6 +106,7 @@ Action: Skip
   - AbuseIPDB score threshold under abuse_confidence_score
   - Zone ID
   - List ID
+  - Mode is automatically set to "Monitor" by default, but you can change it after completing the configuration
 
   ![Config](https://github.com/user-attachments/assets/9ea5611a-e705-41a6-8009-f9afa8656618)
 
@@ -119,11 +120,25 @@ Action: Skip
 
 
 
+## 🧩 Configuration Options
 
-## Adjust the AbuseIPDB score threshold under configuration
+You can now **dynamically adjust** key settings directly from the Home Assistant UI.
+
+### ⚙️ Available Options:
+
+| Option                    | Description                                                                 |
+|--------------------------|-----------------------------------------------------------------------------|
+| **AbuseIPDB Score Threshold** | Minimum score to consider an IP as high risk (default: 100).                  |
+| **Mode** (Active / Monitor)   | - **Active**: Automatically adds high-risk IPs to your Cloudflare list. <br> - **Monitor**: Just detects and logs IPs. |
+| **Recheck Interval (Days)**   | Controls how often previously seen IPs are re-checked (default: 7 days).     |
+
+> These options are accessible under **Configure** in the integration settings:
+
 ![Options](https://github.com/user-attachments/assets/8434f4c2-0fa1-4b88-bedb-d861ccf2fc3a)
 
-![Options2](https://github.com/user-attachments/assets/dc88eba5-fedd-49bd-8b27-a22dadcc64ec)
+<img width="338" alt="image" src="https://github.com/user-attachments/assets/e7eb5d3a-6435-4ce6-a169-56ae869b079f" />
+
+
 
 ---
 
