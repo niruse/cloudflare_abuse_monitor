@@ -71,7 +71,8 @@ Traffic Summary
 
 ## 🔒 Configure Cloudflare Rules
 
-**Rule 1: Block IPs in List**
+**Rule 1: Block IPs in List** > 
+**Note:** If you used a different list name, remember to update it in the rule below.
 ```
 (ip.src in $block_ips)
 Action: Block
