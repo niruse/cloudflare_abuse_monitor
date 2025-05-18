@@ -126,6 +126,10 @@ Action: Skip
 - Fill in:
   - Cloudflare Email
   - Global API Key - Cloudflare Global Token
+  1. Log in to the Cloudflare dashboard and go to User Profile in the right corner > API Tokens left side.
+  2. In the API Keys section, scroll down, click View button of Global API Key.
+  <img width="1349" alt="image" src="https://github.com/user-attachments/assets/857be387-c684-4cae-9382-be6613d061b9" />
+
   - AbuseIPDB API Key
   - AbuseIPDB score threshold under abuse_confidence_score
   - Recheck Days → recheck_days (how many days to wait before rechecking the stored IPs)
