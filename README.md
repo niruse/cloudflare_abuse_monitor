@@ -125,7 +125,7 @@ Action: Skip
 - Click **+ Add Integration**, search for `Cloudflare Abuse Monitor`  
 - Fill in:
   - Cloudflare Email
-  - Global API Key
+  - Global API Key - Cloudflare Global Token
   - AbuseIPDB API Key
   - AbuseIPDB score threshold under abuse_confidence_score
   - Recheck Days → recheck_days (how many days to wait before rechecking the stored IPs)
