@@ -106,9 +106,10 @@ Action: Skip
 
 ## 📦 Installation via HACS
 
-1. Go to **HACS > Integrations > + Explore & Download Repositories**
+1. Go to **HACS **
 2. Click the **three dots menu > Custom repositories**
-3. Add this repository URL: 
+3. Add this repository URL:
+
 
 ### Manual Installation
 - Download the `cloudflare_abuse_monitor` folder  
