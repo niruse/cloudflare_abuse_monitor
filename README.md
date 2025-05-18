@@ -108,7 +108,8 @@ Action: Skip
 
 1. Go to **HACS **
 2. Click the **three dots menu > Custom repositories**
-3. Add this repository URL:
+3. Add this repository URL: https://github.com/niruse/cloudflare_abuse_monitor/tree/main
+
 
 
 ### Manual Installation
