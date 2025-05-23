@@ -246,6 +246,12 @@ cards:
 
 ---
 
+## Disclaimer
+
+⚠️ It's your responsibility to use this integration safely and responsibly. The developer is not responsible for misuse or unintended blocking.
+
+---
+
 ## 🤝 Contributing
 
 We welcome:
