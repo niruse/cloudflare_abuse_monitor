@@ -14,7 +14,7 @@ This custom Home Assistant integration allows you to monitor and manage abusive 
 - 🔄 Real-time traffic analysis
 - 🛡️ IP reputation lookups via AbuseIPDB
 - 🔁 Automated updates to your Cloudflare firewall IP lists
-- 🧠 Dynamic recheck logic – every 7 days
+- 🧠 Dynamic recheck logic – every 7 days, can be changed via configuration.
 - 🚨 Under Attack Mode control – based on request thresholds
 - ⏱️ Smart scheduling – runs every custom number of minutes set via scan_interval_minutes
 
