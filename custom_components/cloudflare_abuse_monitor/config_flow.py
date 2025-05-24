@@ -1,17 +1,13 @@
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
-from .const import DOMAIN
+from .const import DOMAIN,CONFIG_FILE
+import json
+from pathlib import Path
+import logging
 from .api import fetch_zones, fetch_rules_lists
 
-# Schema for the initial user input
-STEP_USER_DATA_SCHEMA = vol.Schema({
-    vol.Required("email"): str,
-    vol.Required("global_token"): str,
-    vol.Required("abuseipdb_token"): str,
-    vol.Required("abuse_confidence_score", default=100.0): vol.Coerce(float),
-    vol.Required("recheck_days", default=7): vol.All(vol.Coerce(int), vol.Range(min=1)),
-})
+_LOGGER = logging.getLogger(__name__)
 
 class CloudflareAbuseMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Cloudflare Abuse Monitor."""
@@ -29,15 +25,26 @@ class CloudflareAbuseMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         self.zone_id = None
         self.zone_name = None
         self.rules_lists = {}
+        self.config_file = CONFIG_FILE
 
     async def async_step_user(self, user_input=None):
         """Handle the initial step."""
+        schema = vol.Schema({
+            vol.Required("email"): str,
+            vol.Required("global_token"): str,
+            vol.Required("abuseipdb_token"): str,
+            vol.Required("abuse_confidence_score", default=100.0): vol.Coerce(float),
+            vol.Required("recheck_days", default=7): vol.All(vol.Coerce(int), vol.Range(min=1)),
+            vol.Required("scan_interval_minutes", default=1): vol.All(vol.Coerce(int), vol.Range(min=1)),
+        })
+
         if user_input is not None:
             self.email = user_input["email"]
             self.api_key = user_input["global_token"]
             self.abuse_key = user_input["abuseipdb_token"]
             self.abuse_score = user_input["abuse_confidence_score"]
             self.recheck_days = user_input["recheck_days"]
+            self.scan_interval = user_input["scan_interval_minutes"]
 
             try:
                 response_data = await self.hass.async_add_executor_job(
@@ -46,7 +53,7 @@ class CloudflareAbuseMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                 if not response_data.get("success", False):
                     return self.async_show_form(
                         step_id="user",
-                        data_schema=STEP_USER_DATA_SCHEMA,
+                        data_schema=schema,
                         errors={"base": "auth_failed"}
                     )
 
@@ -56,20 +63,39 @@ class CloudflareAbuseMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
             except Exception:
                 return self.async_show_form(
                     step_id="user",
-                    data_schema=STEP_USER_DATA_SCHEMA,
+                    data_schema=schema,
                     errors={"base": "connection_error"}
                 )
 
-        return self.async_show_form(step_id="user", data_schema=STEP_USER_DATA_SCHEMA)
+        return self.async_show_form(step_id="user", data_schema=schema)
 
     async def async_step_zone_select(self, user_input=None):
         """Handle the zone selection step."""
         zone_options = {zone["id"]: zone["name"] for zone in self.zones}
-        zone_schema = vol.Schema({
+        schema = vol.Schema({
             vol.Required("zone_id"): vol.In(zone_options),
         })
 
         if user_input is not None:
+
+            try:
+                config_data = {}
+                if CONFIG_FILE.exists():
+                    with CONFIG_FILE.open("r") as f:
+                        config_data = json.load(f)
+
+                config_data.update({
+                    "scan_interval_minutes": self.scan_interval,
+                })
+
+                with CONFIG_FILE.open("w") as f:
+                    json.dump(config_data, f, indent=2)
+
+                _LOGGER.debug("✅ Zone configuration and scan_interval_minutes saved to file")
+
+            except Exception as e:
+                _LOGGER.warning(f"⚠️ Failed to save to {CONFIG_FILE}: {e}")
+
             self.zone_id = user_input["zone_id"]
             selected_zone = next(z for z in self.zones if z["id"] == self.zone_id)
             self.zone_name = selected_zone["name"]
@@ -90,12 +116,12 @@ class CloudflareAbuseMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
             return await self.async_step_list_select()
 
-        return self.async_show_form(step_id="zone_select", data_schema=zone_schema)
+        return self.async_show_form(step_id="zone_select", data_schema=schema)
 
     async def async_step_list_select(self, user_input=None):
         """Handle the list selection step."""
         list_names = list(self.rules_lists.keys())
-        list_schema = vol.Schema({
+        schema = vol.Schema({
             vol.Required("list_name"): vol.In(list_names),
         })
 
@@ -111,6 +137,7 @@ class CloudflareAbuseMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                     "abuseipdb_token": self.abuse_key,
                     "abuse_confidence_score": self.abuse_score,
                     "recheck_days": self.recheck_days,
+                    "scan_interval_minutes": self.scan_interval,
                     "zone_id": self.zone_id,
                     "zone_name": self.zone_name,
                     "account_id": self.account_id,
@@ -120,7 +147,7 @@ class CloudflareAbuseMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                 },
             )
 
-        return self.async_show_form(step_id="list_select", data_schema=list_schema)
+        return self.async_show_form(step_id="list_select", data_schema=schema)
 
     @staticmethod
     @callback
@@ -136,26 +163,43 @@ class CloudflareAbuseMonitorOptionsFlowHandler(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input=None):
         """Manage the options."""
+        options = self.config_entry.options
+        data = self.config_entry.data
+
         if user_input is not None:
+            # 🔄 Save scan_interval_minutes to JSON config
+            try:
+                config_data = {}
+                if CONFIG_FILE.exists():
+                    with CONFIG_FILE.open("r") as f:
+                        config_data = json.load(f)
+
+                config_data["scan_interval_minutes"] = user_input["scan_interval_minutes"]
+
+                with CONFIG_FILE.open("w") as f:
+                    json.dump(config_data, f, indent=2)
+
+                _LOGGER.debug(f"✅ scan_interval_minutes saved: {user_input['scan_interval_minutes']}")
+
+            except Exception as e:
+                _LOGGER.warning(f"⚠️ Failed to save scan_interval_minutes to {CONFIG_FILE}: {e}")
+
             return self.async_create_entry(title="", data=user_input)
 
-        abuse_score = self.config_entry.options.get(
-            "abuse_confidence_score",
-            self.config_entry.data.get("abuse_confidence_score", 100.0)
-        )
-        mode = self.config_entry.options.get(
-            "mode",
-            self.config_entry.data.get("mode", "Monitor")
-        )
-        recheck_days = self.config_entry.options.get(
-            "recheck_days",
-            self.config_entry.data.get("recheck_days", 7)
-        )
+        abuse_score = options.get("abuse_confidence_score", data.get("abuse_confidence_score", 100.0))
+        mode = options.get("mode", data.get("mode", "Monitor"))
+        recheck_days = options.get("recheck_days", data.get("recheck_days", 7))
+        under_attack_mode = options.get("under_attack_mode", data.get("under_attack_mode", False))
+        under_attack_request_threshold = options.get("under_attack_request_threshold", data.get("under_attack_request_threshold", 15000))
+        scan_interval_minutes = options.get("scan_interval_minutes", data.get("scan_interval_minutes", 1))
 
-        options_schema = vol.Schema({
+        schema = vol.Schema({
             vol.Required("abuse_confidence_score", default=abuse_score): vol.Coerce(float),
             vol.Required("mode", default=mode): vol.In(["Active", "Monitor"]),
             vol.Required("recheck_days", default=recheck_days): vol.All(vol.Coerce(int), vol.Range(min=1)),
+            vol.Required("under_attack_mode", default=under_attack_mode): bool,
+            vol.Required("under_attack_request_threshold", default=under_attack_request_threshold): vol.All(vol.Coerce(int), vol.Range(min=1)),
+            vol.Required("scan_interval_minutes", default=scan_interval_minutes): vol.All(vol.Coerce(int), vol.Range(min=1)),
         })
 
-        return self.async_show_form(step_id="init", data_schema=options_schema)
+        return self.async_show_form(step_id="init", data_schema=schema)

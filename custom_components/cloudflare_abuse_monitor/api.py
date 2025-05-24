@@ -188,3 +188,29 @@ def add_ips_to_list(account_id, list_id, new_ips, headers):
         _LOGGER.debug(response.json())
     else:
         _LOGGER.error("❌ Failed to add IPs: %s\n%s", response.status_code, response.text)
+
+
+
+def set_under_attack_mode(zone_id, headers, enable=True):
+    url = f"https://api.cloudflare.com/client/v4/zones/{zone_id}/settings/security_level"
+    mode = "under_attack" if enable else "high"
+
+    payload = {"value": mode}
+    response = requests.patch(url, headers=headers, json=payload)
+
+    if response.status_code == 200:
+        _LOGGER.info("✅ Set Cloudflare 'Under Attack' mode to: %s", mode)
+        return mode
+    else:
+        _LOGGER.error("❌ Failed to update security level: %s - %s", response.status_code, response.text)
+        return "error"
+
+
+def get_cloudflare_security_level(zone_id, headers):
+    url = f"https://api.cloudflare.com/client/v4/zones/{zone_id}/settings/security_level"
+    response = requests.get(url, headers=headers)
+    if response.status_code == 200:
+        return response.json().get("result", {}).get("value", "")
+    else:
+        _LOGGER.error(f"Failed to fetch Cloudflare security level: {response.status_code}")
+        return ""
