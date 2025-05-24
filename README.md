@@ -11,9 +11,13 @@ This is a **custom integration** for Home Assistant and is available via [HACS](
 Welcome to **Cloudflare Abuse Monitor**!  
 This custom Home Assistant integration allows you to monitor and manage abusive IPs on your **Cloudflare** zone. It integrates:
 
-- 🔄 Real-time traffic analysis  
-- 🛡️ IP reputation lookups via **AbuseIPDB**  
-- 🔁 Automated updates to your **Cloudflare** firewall IP lists
+- 🔄 Real-time traffic analysis
+- 🛡️ IP reputation lookups via AbuseIPDB
+- 🔁 Automated updates to your Cloudflare firewall IP lists
+- 🧠 Dynamic recheck logic – every 7 days
+- 🚨 Under Attack Mode control – based on request thresholds
+- ⏱️ Smart scheduling – runs every custom number of minutes set via scan_interval_minutes
+
 
 > *Keep your network protected and your automations smart.*
 
@@ -25,21 +29,50 @@ This custom Home Assistant integration allows you to monitor and manage abusive 
 - 🔄 **Recheck IPs**: Optionally recheck IPs after X days (configurable).
 - ⚙️ **Custom Modes**: Choose between `Monitor` or `Active` mode for automatic blocking.
 - 🧠 **Smart Skipping**: Avoid rechecking IPs already handled.
-
+- 🚨 Cloudflare Under Attack Mode support
+  
 ## Sensors
 - 📊 **Traffic Summary**: Track HTTP requests via Cloudflare GraphQL API.
 - 🚫 **Skipped IPs**: Track IPs skipped due to existing rules  
 - 📋 **Listed IPs**: Track IPs currently in your block list  
 - ❌ **High-Risk IP Detection**: IPs with high AbuseIPDB scores are flagged and handled.
+- 🛡️ Under Attack Mode: Indicates whether Cloudflare's Under Attack Mode is currently enabled (on) or disabled (off) for your zone.
 
 Each sensor updates at a configurable interval (*default: every minute*) and integrates seamlessly with your **Home Assistant dashboard**.
+
+---
+
+## 🆕 What's New in v1.2
+
+### 🛡️ Under Attack Mode Sensor (NEW!)
+- Monitor and **toggle Cloudflare's "Under Attack Mode"** directly from Home Assistant.
+- Useful for automating emergency protections when malicious traffic is detected.
+- Includes visual state feedback and custom styling for clear alert levels.
+- last_request_count tracking in global file – Remembers the previous request count to compare with the current value and detect traffic spikes
+### ⏱️ Smart Scheduling & Next Update Info
+- Sensors now expose:
+  - `next_update_in`: Countdown (in seconds) until the next update.
+  - `next_run_full_format`: Human-readable time of next scheduled run.
+- Update intervals can now be **controlled from GUI or config file**:
+<img width="324" alt="image" src="https://github.com/user-attachments/assets/78c40095-c8eb-48ea-9493-bea520f763e7" />
+ 
+  `/config/cloudflare_abuse_monitor_configuration.json`
+
+Example:
+```json
+{
+  "scan_interval_minutes": 1,
+  "last_request_count": 695
+}
+```
 
 ---
 
 ## 🖼️ Screenshots
 
 ### 📊 Dashboard Overview  
-![Dashboard Overview](https://github.com/user-attachments/assets/cd87eae1-0c3d-4725-bcaf-7db4dd7dca93)
+<img width="394" alt="image" src="https://github.com/user-attachments/assets/f3750974-2d2a-4f1e-b80e-14262a579327" />
+
 
 ### 📋 Sensor Details
 Listed IPs
@@ -60,6 +93,11 @@ Traffic Summary
 
 <!-- Traffic Summary -->
 <img src="https://github.com/user-attachments/assets/09a5f8bf-5687-4d5f-b49d-149d216c38b5" alt="Traffic Summary" width="500"/>
+
+Under Attack Mode
+
+<!-- Under Attack Mode -->
+<img width="456" alt="image" src="https://github.com/user-attachments/assets/2dcdd02c-d464-42bb-8df3-235ebc15681c" />
 
 ---
 
@@ -139,7 +177,6 @@ Action: Skip
 
   <img width="326" alt="image" src="https://github.com/user-attachments/assets/d329c52f-1f15-4597-86f3-a4cad405815d" />
 
-
   Page for zone id
   
   <img width="312" alt="image" src="https://github.com/user-attachments/assets/e60b2ed2-bc68-4ab6-a641-e8a3206cfa4a" />
@@ -156,19 +193,28 @@ You can now **dynamically adjust** key settings directly from the Home Assistant
 
 ### ⚙️ Available Options:
 
-| Option                    | Description                                                                 |
-|--------------------------|-----------------------------------------------------------------------------|
-| **AbuseIPDB Score Threshold** | Minimum score to consider an IP as high risk (default: 100).                  |
-| **Mode** (Active / Monitor)   | - **Active**: Automatically adds high-risk IPs to your Cloudflare list. <br> - **Monitor**: Just detects and logs IPs. |
-| **Recheck Interval (Days)**   | Controls how often previously seen IPs are re-checked (default: 7 days).     |
+| Option                          | Description                                                                 |
+|---------------------------------|-----------------------------------------------------------------------------|
+| `abuse_confidence_score`        | Minimum AbuseIPDB score to treat an IP as "high risk". Default: `100`      |
+| `mode`                          | `Monitor`: Logs only, or `Active`: Automatically blocks high-risk IPs.     |
+| `recheck_days`                  | Days to wait before rechecking previously flagged IPs.                     |
+| `under_attack_mode`             | Enable or disable Cloudflare Under Attack Mode based on request threshold. |
+| `under_attack_request_threshold`| The number of requests per minute is evaluated based on scan_interval_minutes to determine whether to trigger Under Attack Mode.              |
+| `scan_interval_minutes`         | How often (in minutes) each sensor should run.                             |
 
+> These options can be changed anytime without restarting Home Assistant.
 > These options are accessible under **Configure** in the integration settings:
 
-![Options](https://github.com/user-attachments/assets/8434f4c2-0fa1-4b88-bedb-d861ccf2fc3a)
+![Options](https://github.com/user-attachments/assets/96fd9879-40ae-4619-8fb5-a208c0509306)
 
-<img width="338" alt="image" src="https://github.com/user-attachments/assets/e7eb5d3a-6435-4ce6-a169-56ae869b079f" />
+<img width="325" alt="image" src="https://github.com/user-attachments/assets/599018c9-935b-4073-8c45-924f8f085405" />
 
+---
 
+## 💡 Example Behavior
+
+If `under_attack_mode` is enabled and `under_attack_request_threshold = 3000`:
+- Under Attack Mode is triggered if the number of requests during the scan_interval_minutes period exceeds the defined threshold.
 
 ---
 
@@ -181,6 +227,7 @@ This example **Lovelace dashboard** uses [`button-card`](https://github.com/cust
 - `sensor.cloudflare_skipped_ips` → Replace with your skipped IPs sensor  
 - `sensor.cloudflare_listed_ips` → Replace with your listed IPs sensor  
 - `sensor.cloudflare_high_risk_ips` → Replace with your high-risk IPs sensor
+- `sensor.under_attack_mode` → Replace with your under_attack_mode sensor
 
 ```yaml
 type: vertical-stack
@@ -229,13 +276,46 @@ cards:
           ]]]
         tap_action:
           action: more-info
+  - type: custom:button-card
+    name: Under Attack Mode
+    icon: mdi:shield-alert
+    show_state: true
+    show_icon: true
+    show_name: true
+    entity: sensor.under_attack_mode
+    tap_action:
+      action: more-info
+    state_display: |
+      [[[
+        if (entity.state === "on") return "ACTIVE";
+        if (entity.state === "off") return "OFF";
+        if (entity.state === "unknown") return "Unknown";
+        if (entity.state === "error") return "Error";
+        return entity.state;
+      ]]]
+    styles:
+      card:
+        - background-color: |
+            [[[
+              if (entity.state === "on") return "rgba(255, 0, 0, 0.2)";
+              if (entity.state === "off") return "rgba(0, 128, 0, 0.2)";
+              return "rgba(128, 128, 128, 0.2)";
+            ]]]
+        - border: 1px solid rgba(255, 255, 255, 0.1)
+        - border-radius: 12px
+        - padding: 12px
+      name:
+        - font-weight: bold
+      state:
+        - font-size: 14px
+        - font-weight: 500
 ```
 
 ---
 
 ## 🧰 Services
 
-![Services](https://github.com/user-attachments/assets/ee35b310-5b82-417e-b6f0-6fedd202f5a6)
+![Services](https://github.com/user-attachments/assets/2f9f85e2-8b7c-4e83-beb6-928c93456e73)
 
 ---
 
