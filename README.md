@@ -23,6 +23,12 @@ This custom Home Assistant integration allows you to monitor and manage abusive 
 
 ---
 
+## ☕ Support
+
+If you found this project helpful, you can [buy me a coffee](https://coff.ee/niruse)!
+
+---
+
 ## 🔍 Features
 
 - ✅ **Automatic Blocking**: Block malicious IPs by updating your Cloudflare firewall list.
@@ -344,10 +350,4 @@ Submit a PR or [open an issue](https://github.com/niruse/cloudflare_abuse_monito
 ---
 
 **Protect your Cloudflare zone with real-time threat monitoring — directly in Home Assistant!**
-
----
-
-## ☕ Support
-
-If you found this project helpful, you can [buy me a coffee](https://coff.ee/niruse)!
 
