@@ -328,7 +328,6 @@ cards:
 ## 🧠 Notes
 
 - Checked IPs are stored in `cloudflare_checked_ips.json`
-- You can change the update interval of all the sensors by modifying the SCAN_INTERVAL value inside sensor.py.
 
 ---
 
