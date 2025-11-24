@@ -18,7 +18,7 @@ from .api import (
     add_ips_to_list,
     set_under_attack_mode,
 )
-from .const import CONFIG_FILE 
+from .const import CONFIG_FILE
 
 DOMAIN = "cloudflare_abuse_monitor"
 CHECKED_IPS_FILE = Path("/config/cloudflare_checked_ips.json")
@@ -38,6 +38,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         CloudflareHighRiskIPsSensor(hass, entry),
         CloudflareUnderAttackSensor(hass, entry),
     ])
+
+
+# ---------- Async file IO helpers (IO only, no logic changes) ----------
+async def _async_path_exists(path: Path) -> bool:
+    return await asyncio.to_thread(path.exists)
+
+async def _async_read_json(path: Path, default: dict | list | None = None):
+    try:
+        if not await _async_path_exists(path):
+            return {} if default is None else default
+        async with aiofiles.open(path, mode="r") as f:
+            content = await f.read()
+        if not content.strip():
+            return {} if default is None else default
+        return json.loads(content)
+    except Exception as e:
+        _LOGGER.debug("Failed reading JSON from %s: %s", path, e)
+        return {} if default is None else default
+
+async def _async_write_json(path: Path, data) -> None:
+    try:
+        await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
+        async with aiofiles.open(path, mode="w") as f:
+            await f.write(json.dumps(data, indent=2))
+    except Exception as e:
+        _LOGGER.warning("Failed writing JSON to %s: %s", path, e)
+
 
 class CloudflareBaseSensor(SensorEntity):
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
@@ -60,9 +87,9 @@ class CloudflareBaseSensor(SensorEntity):
     @property
     def extra_state_attributes(self):
         attrs = self._attr_extra_state_attributes.copy()
-        if hasattr(self, '_next_update_in') and self._next_update_in is not None:
+        if hasattr(self, "_next_update_in") and self._next_update_in is not None:
             attrs["next_update_in_seconds"] = self._next_update_in
-        if hasattr(self, '_next_update_in_full_date') and self._next_update_in_full_date:
+        if hasattr(self, "_next_update_in_full_date") and self._next_update_in_full_date:
             attrs["next_update"] = self._next_update_in_full_date
         return attrs
 
@@ -74,7 +101,7 @@ class CloudflareBaseSensor(SensorEntity):
         else:
             self.counter = 1
             try:
-                if self.config_file.exists():
+                if await _async_path_exists(self.config_file):
                     async with aiofiles.open(self.config_file, mode="r") as f:
                         content = await f.read()
                         config_data = json.loads(content)
@@ -89,13 +116,10 @@ class CloudflareBaseSensor(SensorEntity):
             seconds_to_wait = seconds
 
         return seconds_to_wait
-        
-        
+
     async def _schedule_next_update(self):
         """Schedule the next sensor update after a random interval."""
-        #print(f"Waiting for {self._next_update_in} seconds before next update...")
-        await asyncio.sleep(self._next_update_in)  # Wait for the random interval
-        #await self.async_update()  # Perform the update again
+        await asyncio.sleep(self._next_update_in)
 
 
 class CloudflareTrafficSummarySensor(CloudflareBaseSensor):
@@ -111,13 +135,13 @@ class CloudflareTrafficSummarySensor(CloudflareBaseSensor):
         self.counter = 0
 
     async def async_update(self):
-        self._next_update_in = await self._get_sleep_interval() 
+        self._next_update_in = await self._get_sleep_interval()
         next_run_full_format = datetime.now() + timedelta(seconds=self._next_update_in)
-        self._next_update_in_full_date = next_run_full_format.strftime("%Y-%m-%d %H:%M:%S")           
+        self._next_update_in_full_date = next_run_full_format.strftime("%Y-%m-%d %H:%M:%S")
         await self._schedule_next_update()
-        self._next_update_in = await self._get_sleep_interval() 
+        self._next_update_in = await self._get_sleep_interval()
         next_run_full_format = datetime.now() + timedelta(seconds=self._next_update_in)
-        self._next_update_in_full_date = next_run_full_format.strftime("%Y-%m-%d %H:%M:%S")  
+        self._next_update_in_full_date = next_run_full_format.strftime("%Y-%m-%d %H:%M:%S")
 
         try:
             data = self._entry.data
@@ -126,23 +150,24 @@ class CloudflareTrafficSummarySensor(CloudflareBaseSensor):
             )
             self._attr_native_value = summary.get("requests", 0)
 
-            # Merge summary fields directly into the attributes
             self._attr_extra_state_attributes = {
                 **summary,
-                "zone_id": data["zone_id"]
+                "zone_id": data["zone_id"],
             }
 
             self._attr_extra_state_attributes.update({
                 **summary,
-                "zone_id": data["zone_id"]
+                "zone_id": data["zone_id"],
             })
 
         except Exception as e:
             self._attr_native_value = "error"
             self._attr_extra_state_attributes = {
                 "error": str(e),
-                "zone_id": data.get("zone_id")
+                "zone_id": data.get("zone_id"),
             }
+
+
 class CloudflareSkipIPsSensor(CloudflareBaseSensor):
     def __init__(self, hass, entry):
         super().__init__(hass, entry)
@@ -154,38 +179,38 @@ class CloudflareSkipIPsSensor(CloudflareBaseSensor):
         self._next_update_in_full_date = None
         self._next_update_in = None
         self.counter = 0
-        
 
-    async def async_update(self):     
-        self._next_update_in = await self._get_sleep_interval() 
+    async def async_update(self):
+        self._next_update_in = await self._get_sleep_interval()
         next_run_full_format = datetime.now() + timedelta(seconds=self._next_update_in)
-        self._next_update_in_full_date = next_run_full_format.strftime("%Y-%m-%d %H:%M:%S")           
+        self._next_update_in_full_date = next_run_full_format.strftime("%Y-%m-%d %H:%M:%S")
         await self._schedule_next_update()
-        self._next_update_in = await self._get_sleep_interval() 
+        self._next_update_in = await self._get_sleep_interval()
         next_run_full_format = datetime.now() + timedelta(seconds=self._next_update_in)
-        self._next_update_in_full_date = next_run_full_format.strftime("%Y-%m-%d %H:%M:%S")  
+        self._next_update_in_full_date = next_run_full_format.strftime("%Y-%m-%d %H:%M:%S")
 
         try:
             data = self._entry.data
             headers = {
                 "X-Auth-Email": data["email"],
                 "X-Auth-Key": data["global_token"],
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
             }
             now = datetime.utcnow()
             midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
             skip_ips = await self.hass.async_add_executor_job(
                 get_skip_ips,
                 data["zone_id"],
-                midnight.strftime('%Y-%m-%dT%H:%M:%SZ'),
-                now.strftime('%Y-%m-%dT%H:%M:%SZ'),
-                headers
+                midnight.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                headers,
             )
             self._attr_native_value = len(skip_ips)
             self._attr_extra_state_attributes["skip_ips"] = skip_ips
         except Exception as e:
             self._attr_native_value = "error"
             self._attr_extra_state_attributes["error"] = str(e)
+
 
 class CloudflareListIPsSensor(CloudflareBaseSensor):
     def __init__(self, hass, entry):
@@ -199,21 +224,21 @@ class CloudflareListIPsSensor(CloudflareBaseSensor):
         self._next_update_in = None
         self.counter = 0
 
-    async def async_update(self):      
-        self._next_update_in = await self._get_sleep_interval() 
+    async def async_update(self):
+        self._next_update_in = await self._get_sleep_interval()
         next_run_full_format = datetime.now() + timedelta(seconds=self._next_update_in)
-        self._next_update_in_full_date = next_run_full_format.strftime("%Y-%m-%d %H:%M:%S")           
+        self._next_update_in_full_date = next_run_full_format.strftime("%Y-%m-%d %H:%M:%S")
         await self._schedule_next_update()
-        self._next_update_in = await self._get_sleep_interval() 
+        self._next_update_in = await self._get_sleep_interval()
         next_run_full_format = datetime.now() + timedelta(seconds=self._next_update_in)
-        self._next_update_in_full_date = next_run_full_format.strftime("%Y-%m-%d %H:%M:%S")  
+        self._next_update_in_full_date = next_run_full_format.strftime("%Y-%m-%d %H:%M:%S")
 
         try:
             data = self._entry.data
             headers = {
                 "X-Auth-Email": data["email"],
                 "X-Auth-Key": data["global_token"],
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
             }
             current_ips = await self.hass.async_add_executor_job(
                 get_current_list_ips, data["account_id"], data["list_id"], headers
@@ -223,6 +248,7 @@ class CloudflareListIPsSensor(CloudflareBaseSensor):
         except Exception as e:
             self._attr_native_value = "error"
             self._attr_extra_state_attributes["error"] = str(e)
+
 
 class CloudflareHighRiskIPsSensor(CloudflareBaseSensor):
     def __init__(self, hass, entry):
@@ -242,13 +268,13 @@ class CloudflareHighRiskIPsSensor(CloudflareBaseSensor):
         self.counter = 0
 
     async def async_update(self):
-        self._next_update_in = await self._get_sleep_interval() 
+        self._next_update_in = await self._get_sleep_interval()
         next_run_full_format = datetime.now() + timedelta(seconds=self._next_update_in)
-        self._next_update_in_full_date = next_run_full_format.strftime("%Y-%m-%d %H:%M:%S")           
+        self._next_update_in_full_date = next_run_full_format.strftime("%Y-%m-%d %H:%M:%S")
         await self._schedule_next_update()
-        self._next_update_in = await self._get_sleep_interval() 
+        self._next_update_in = await self._get_sleep_interval()
         next_run_full_format = datetime.now() + timedelta(seconds=self._next_update_in)
-        self._next_update_in_full_date = next_run_full_format.strftime("%Y-%m-%d %H:%M:%S")  
+        self._next_update_in_full_date = next_run_full_format.strftime("%Y-%m-%d %H:%M:%S")
 
         try:
             data = self._entry.data
@@ -266,7 +292,7 @@ class CloudflareHighRiskIPsSensor(CloudflareBaseSensor):
             headers = {
                 "X-Auth-Email": email,
                 "X-Auth-Key": api_key,
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
             }
 
             now = datetime.utcnow()
@@ -275,25 +301,22 @@ class CloudflareHighRiskIPsSensor(CloudflareBaseSensor):
             skip_ips = await self.hass.async_add_executor_job(
                 get_skip_ips,
                 zone_id,
-                midnight.strftime('%Y-%m-%dT%H:%M:%SZ'),
-                now.strftime('%Y-%m-%dT%H:%M:%SZ'),
-                headers
+                midnight.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                headers,
             )
             current_ips = await self.hass.async_add_executor_job(
                 get_current_list_ips,
                 account_id,
                 list_id,
-                headers
+                headers,
             )
 
             potential_ips = list(set(skip_ips) - set(current_ips))
             ips_to_check = []
 
-            if CHECKED_IPS_FILE.exists():
-                with open(CHECKED_IPS_FILE, "r") as f:
-                    checked_cache = json.load(f)
-            else:
-                checked_cache = {}
+            # async, non-blocking cache read
+            checked_cache = await _async_read_json(CHECKED_IPS_FILE, default={})
 
             high_risk_ips = []
             updated_cache = checked_cache.copy()
@@ -321,8 +344,8 @@ class CloudflareHighRiskIPsSensor(CloudflareBaseSensor):
                 except Exception:
                     pass
 
-            with open(CHECKED_IPS_FILE, "w") as f:
-                json.dump(updated_cache, f, indent=2)
+            # async, non-blocking cache write
+            await _async_write_json(CHECKED_IPS_FILE, updated_cache)
 
             if mode == "Active":
                 for ip_info in high_risk_ips:
@@ -333,7 +356,7 @@ class CloudflareHighRiskIPsSensor(CloudflareBaseSensor):
                             account_id,
                             list_id,
                             [ip],
-                            headers
+                            headers,
                         )
                     except Exception:
                         pass
@@ -344,13 +367,14 @@ class CloudflareHighRiskIPsSensor(CloudflareBaseSensor):
                 "recheck_days": recheck_days,
                 "mode": mode,
                 "high_risk_ip_list": [ip["ip"] for ip in high_risk_ips],
-                "ips_to_check": ips_to_check
+                "ips_to_check": ips_to_check,
             }
 
         except Exception as e:
             self._attr_native_value = "error"
             self._attr_extra_state_attributes = {"error": str(e)}
             self._attr_available = False
+
 
 class CloudflareUnderAttackSensor(CloudflareBaseSensor):
     def __init__(self, hass, entry):
@@ -365,7 +389,7 @@ class CloudflareUnderAttackSensor(CloudflareBaseSensor):
         self.is_first_run = False
 
     async def _wait_for_sensor_state(self, entity_id: str, retries: int = 5, delay: int = 30):
-        for attempt in range(retries):
+        for _ in range(retries):
             state = self.hass.states.get(entity_id)
             if state and state.state not in ("unknown", "unavailable", None):
                 return state
@@ -386,7 +410,7 @@ class CloudflareUnderAttackSensor(CloudflareBaseSensor):
                 self._attr_native_value = "off"
                 self._attr_extra_state_attributes = {
                     "mode": "Monitor",
-                    "reason": "Monitoring mode is active"
+                    "reason": "Monitoring mode is active",
                 }
                 return
 
@@ -404,7 +428,7 @@ class CloudflareUnderAttackSensor(CloudflareBaseSensor):
             headers = {
                 "X-Auth-Email": email,
                 "X-Auth-Key": self._entry.data["global_token"],
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
             }
 
             if not enabled:
@@ -413,13 +437,13 @@ class CloudflareUnderAttackSensor(CloudflareBaseSensor):
                 self._attr_extra_state_attributes = {
                     "enabled": enabled,
                     "reason": "Under attack mode is disabled",
-                    "traffic_sensor": traffic_entity_id
+                    "traffic_sensor": traffic_entity_id,
                 }
                 await self.hass.async_add_executor_job(
                     set_under_attack_mode,
                     self._entry.data["zone_id"],
                     headers,
-                    False
+                    False,
                 )
                 return
 
@@ -428,18 +452,18 @@ class CloudflareUnderAttackSensor(CloudflareBaseSensor):
                 self._attr_native_value = "unknown"
                 self._attr_extra_state_attributes = {
                     "error": f"Sensor state is {state.state if state else 'missing'}",
-                    "traffic_sensor": traffic_entity_id
+                    "traffic_sensor": traffic_entity_id,
                 }
                 self._attr_available = False
                 return
 
             current_count = int(float(state.state))
 
-            # Read or initialize config
+            # Read or initialize config (IO only handled)
             last_request_count = 0
             config_data = {}
-                
-            if CONFIG_FILE.exists():
+
+            if await _async_path_exists(CONFIG_FILE):
                 try:
                     async with aiofiles.open(CONFIG_FILE, mode="r") as f:
                         content = await f.read()
@@ -447,7 +471,7 @@ class CloudflareUnderAttackSensor(CloudflareBaseSensor):
                     if "last_request_count" not in config_data:
                         self.is_first_run = True
                         config_data["last_request_count"] = current_count
-                except Exception as e:
+                except Exception:
                     self.is_first_run = True
                     config_data["last_request_count"] = current_count
             else:
@@ -463,13 +487,15 @@ class CloudflareUnderAttackSensor(CloudflareBaseSensor):
             config_data["last_request_count"] = current_count
             async with aiofiles.open(CONFIG_FILE, mode="w") as f:
                 await f.write(json.dumps(config_data, indent=2))
+
             if real_mode_enabled:
                 await self.hass.async_add_executor_job(
                     set_under_attack_mode,
                     self._entry.data["zone_id"],
                     headers,
-                    True
+                    True,
                 )
+
             self.is_first_run = False
             self._attr_native_value = "on" if real_mode_enabled else "off"
             self._attr_extra_state_attributes = {
@@ -479,16 +505,14 @@ class CloudflareUnderAttackSensor(CloudflareBaseSensor):
                 "last_request_count": last_request_count,
                 "delta": delta,
                 "under_attack_mode_active": real_mode_enabled,
-                "traffic_sensor": traffic_entity_id
+                "traffic_sensor": traffic_entity_id,
             }
             self._attr_available = True
-
 
         except Exception as e:
             self._attr_native_value = "error"
             self._attr_extra_state_attributes = {
                 "error": str(e),
-                "traffic_sensor": traffic_entity_id
+                "traffic_sensor": traffic_entity_id,
             }
             self._attr_available = False
-
