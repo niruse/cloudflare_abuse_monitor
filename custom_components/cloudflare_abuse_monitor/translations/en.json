@@ -1,0 +1,54 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Cloudflare Abuse Monitor",
+        "description": "Connect your Cloudflare account and AbuseIPDB.",
+        "data": {
+          "email": "Cloudflare account email",
+          "global_token": "Cloudflare Global API Key",
+          "abuseipdb_token": "AbuseIPDB API key",
+          "abuse_confidence_score": "AbuseIPDB score that counts as high risk (0-100)",
+          "recheck_days": "Days before an IP is looked up again",
+          "scan_interval_minutes": "Update interval (minutes)"
+        }
+      },
+      "zone_select": {
+        "title": "Choose the zone",
+        "data": {
+          "zone_id": "Zone"
+        }
+      },
+      "list_select": {
+        "title": "Choose the IP list to block with",
+        "data": {
+          "list_name": "IP list"
+        }
+      }
+    },
+    "error": {
+      "auth_failed": "Cloudflare rejected the email or Global API Key.",
+      "connection_error": "Could not reach Cloudflare. Try again."
+    },
+    "abort": {
+      "already_configured": "This zone is already configured.",
+      "no_zones_found": "This Cloudflare account has no zones.",
+      "no_rules_lists_found": "No IP list found. Create one under Manage Account > Configurations > Lists, then try again."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Cloudflare Abuse Monitor options",
+        "data": {
+          "abuse_confidence_score": "AbuseIPDB score that counts as high risk (0-100)",
+          "mode": "Mode (Monitor only reports, Active adds high-risk IPs to the list)",
+          "recheck_days": "Days before an IP is looked up again",
+          "under_attack_mode": "Turn on Under Attack Mode on a traffic spike",
+          "under_attack_request_threshold": "Requests per update interval that count as a spike",
+          "scan_interval_minutes": "Update interval (minutes)"
+        }
+      }
+    }
+  }
+}

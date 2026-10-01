@@ -48,29 +48,32 @@ Each sensor updates at a configurable interval (*default: every minute*) and int
 
 ---
 
-## 🆕 What's New in v1.2
+## 🆕 What's New in v1.5
+
+A reliability release. Entity IDs, unique IDs and attribute names are unchanged, so existing dashboards keep working.
+
+- 🧹 **No more log spam**: one update per interval for the whole zone (a `DataUpdateCoordinator`) instead of five sensors that each slept inside their update. Home Assistant no longer logs *"took longer than the scheduled update interval"* every 30 seconds.
+- 📋 **Listed IPs counts the whole list**: the Cloudflare list API returns 25 items per page; every page is now read (a 32-IP list showed 25 before).
+- 🛡️ **Under Attack Mode leaves your security level alone**: with the option off, the integration no longer sets the zone to `high` on every update. It only undoes a change it made itself, back to the level that was set before. The sensor now shows the zone's real state (`on` while Cloudflare is in Under Attack Mode) and a new `security_level` attribute.
+- 🔁 **Failed AbuseIPDB lookups are retried**: a failed or rate-limited lookup is no longer cached as "checked" for `recheck_days`. Scores are kept in the cache, so a high-risk IP that is not in the list yet (failed add, or a switch from Monitor to Active) is blocked on the next update.
+- ⚠️ **Errors show on the sensor that failed**: a failed call sets that sensor to `unknown` with an `error` attribute instead of the string `error` on a numeric sensor, and the other sensors keep updating.
+- 🕛 Right after midnight UTC, Traffic Summary reads `0` instead of failing.
+- ⚙️ Changing an option reloads the integration, so a new update interval applies at once. Settings live in the integration options only; `/config/cloudflare_abuse_monitor_configuration.json` is no longer read or written.
+- 🌐 Setup form labels and errors are translated; a zone can only be added once; bad credentials show "rejected" instead of "could not connect"; only IP lists are offered.
+
+## What's New in v1.2
 
 ### 🛡️ Under Attack Mode Sensor (NEW!)
 - Monitor and **toggle Cloudflare's "Under Attack Mode"** directly from Home Assistant.
 - Useful for automating emergency protections when malicious traffic is detected.
 - Includes visual state feedback and custom styling for clear alert levels.
-- last_request_count tracking in global file – Remembers the previous request count to compare with the current value and detect traffic spikes
+- Compares the request count with the previous update to detect traffic spikes.
 ### ⏱️ Smart Scheduling & Next Update Info
-- Sensors now expose:
-  - `next_update_in`: Countdown (in seconds) until the next update.
-  - `next_run_full_format`: Human-readable time of next scheduled run.
-- Update intervals can now be **controlled from GUI or config file**:
+- Sensors expose:
+  - `next_update_in_seconds`: the update interval, in seconds.
+  - `next_update`: local time of the next update.
+- The update interval is set in the integration options (`scan_interval_minutes`):
 <img width="324" alt="image" src="https://github.com/user-attachments/assets/78c40095-c8eb-48ea-9493-bea520f763e7" />
- 
-  `/config/cloudflare_abuse_monitor_configuration.json`
-
-Example:
-```json
-{
-  "scan_interval_minutes": 1,
-  "last_request_count": 695
-}
-```
 
 ---
 
@@ -205,10 +208,10 @@ You can now **dynamically adjust** key settings directly from the Home Assistant
 | `mode`                          | `Monitor`: Logs only, or `Active`: Automatically blocks high-risk IPs.     |
 | `recheck_days`                  | Days to wait before rechecking previously flagged IPs.                     |
 | `under_attack_mode`             | Enable or disable Cloudflare Under Attack Mode based on request threshold. |
-| `under_attack_request_threshold`| The number of requests per minute is evaluated based on scan_interval_minutes to determine whether to trigger Under Attack Mode.              |
-| `scan_interval_minutes`         | How often (in minutes) each sensor should run.                             |
+| `under_attack_request_threshold`| Requests between two updates (one `scan_interval_minutes` period) that trigger Under Attack Mode. |
+| `scan_interval_minutes`         | How often (in minutes) the sensors update.                                 |
 
-> These options can be changed anytime without restarting Home Assistant.
+> These options can be changed anytime without restarting Home Assistant; saving them reloads the integration.
 > These options are accessible under **Configure** in the integration settings:
 
 ![Options](https://github.com/user-attachments/assets/96fd9879-40ae-4619-8fb5-a208c0509306)
@@ -220,7 +223,8 @@ You can now **dynamically adjust** key settings directly from the Home Assistant
 ## 💡 Example Behavior
 
 If `under_attack_mode` is enabled and `under_attack_request_threshold = 3000`:
-- Under Attack Mode is triggered if the number of requests during the scan_interval_minutes period exceeds the defined threshold.
+- Under Attack Mode is triggered if the number of requests during the scan_interval_minutes period reaches the defined threshold.
+- It stays on until you turn `under_attack_mode` off (or switch to `Monitor`); the integration then restores the security level the zone had before. It never changes a level it did not set itself.
 
 ---
 
@@ -278,7 +282,7 @@ cards:
         entity: sensor.cloudflare_high_risk_ips
         state_display: >
           [[[ 
-            return `${states['sensor.cloudflare_high_risk_ips'].attributes.ips_to_check?.length || 0} / ${states['sensor.cloudflare_high_risk_ips'].attributes.ips_to_block?.length || 0}`; 
+            return `${states['sensor.cloudflare_high_risk_ips'].attributes.ips_to_check?.length || 0} / ${states['sensor.cloudflare_high_risk_ips'].attributes.high_risk_ip_list?.length || 0}`; 
           ]]]
         tap_action:
           action: more-info
@@ -327,7 +331,7 @@ cards:
 
 ## 🧠 Notes
 
-- Checked IPs are stored in `cloudflare_checked_ips.json`
+- Checked IPs and their AbuseIPDB scores are stored in `/config/cloudflare_checked_ips.json`, shared by all configured zones.
 
 ---
 
