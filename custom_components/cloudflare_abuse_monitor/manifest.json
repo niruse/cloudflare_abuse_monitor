@@ -1,12 +1,13 @@
 {
   "domain": "cloudflare_abuse_monitor",
   "name": "Cloudflare Abuse Monitor",
-  "version": "1.4",
-  "config_flow": true,
-  "requirements": [],
-  "dependencies": [],
   "codeowners": ["@niruse"],
-  "iot_class": "cloud_polling",
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/niruse/cloudflare_abuse_monitor",
   "integration_type": "service",
-  "homeassistant": "2025.12.0"
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/niruse/cloudflare_abuse_monitor/issues",
+  "requirements": [],
+  "version": "1.5"
 }
