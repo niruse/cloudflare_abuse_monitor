@@ -10,14 +10,16 @@ PARALLEL_UPDATES = 0
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback):
-    coordinator = entry.runtime_data
-    async_add_entities([
-        CloudflareTrafficSummarySensor(coordinator, entry),
-        CloudflareSkipIPsSensor(coordinator, entry),
-        CloudflareListIPsSensor(coordinator, entry),
-        CloudflareHighRiskIPsSensor(coordinator, entry),
-        CloudflareUnderAttackSensor(coordinator, entry),
-    ])
+    entities = []
+    for coordinator in entry.runtime_data.coordinators.values():
+        entities += [
+            CloudflareTrafficSummarySensor(coordinator, entry),
+            CloudflareSkipIPsSensor(coordinator, entry),
+            CloudflareListIPsSensor(coordinator, entry),
+            CloudflareHighRiskIPsSensor(coordinator, entry),
+            CloudflareUnderAttackSensor(coordinator, entry),
+        ]
+    async_add_entities(entities)
 
 
 class CloudflareBaseSensor(CloudflareEntity, SensorEntity):
@@ -45,7 +47,7 @@ class CloudflareTrafficSummarySensor(CloudflareBaseSensor):
 
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry)
-        data = entry.data
+        data = coordinator.zone
         self._attr_name = f"{data['zone_name']} Traffic Summary"
         self._attr_unique_id = f"{self._prefix}_{data['zone_name']}_traffic_summary".replace(" ", "_").lower()
         self._attr_native_unit_of_measurement = "requests"
@@ -56,7 +58,7 @@ class CloudflareSkipIPsSensor(CloudflareBaseSensor):
 
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry)
-        data = entry.data
+        data = coordinator.zone
         self._attr_name = f"{data['zone_name']} Skip IPs"
         self._attr_unique_id = f"{self._prefix}_{data['zone_name']}_skip_ips".replace(" ", "_").lower()
         self._attr_native_unit_of_measurement = "IPs"
@@ -67,7 +69,7 @@ class CloudflareListIPsSensor(CloudflareBaseSensor):
 
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry)
-        data = entry.data
+        data = coordinator.zone
         self._attr_name = f"{data['zone_name']} List IPs"
         self._attr_unique_id = f"{self._prefix}_{data['zone_name']}_list_ips".replace(" ", "_").lower()
         self._attr_native_unit_of_measurement = "IPs"
@@ -78,7 +80,7 @@ class CloudflareHighRiskIPsSensor(CloudflareBaseSensor):
 
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry)
-        data = entry.data
+        data = coordinator.zone
         self._attr_name = f"{data['zone_name']} High Risk IPs"
         self._attr_unique_id = f"{self._prefix}_{data['zone_id']}_high_risk_ips".replace(" ", "_").lower()
         self._attr_native_unit_of_measurement = "IPs"
@@ -89,6 +91,6 @@ class CloudflareUnderAttackSensor(CloudflareBaseSensor):
 
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry)
-        data = entry.data
+        data = coordinator.zone
         self._attr_name = f"{data['zone_name']} Under Attack Mode"
         self._attr_unique_id = f"{self._prefix}_{data['zone_id']}_under_attack".replace("@", "_").replace(".", "_").lower()

@@ -10,7 +10,9 @@ PARALLEL_UPDATES = 1
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback):
-    async_add_entities([CloudflareUnderAttackSwitch(entry.runtime_data, entry)])
+    async_add_entities(
+        CloudflareUnderAttackSwitch(coordinator, entry) for coordinator in entry.runtime_data.coordinators.values()
+    )
 
 
 class CloudflareUnderAttackSwitch(CloudflareEntity, SwitchEntity):
@@ -21,7 +23,7 @@ class CloudflareUnderAttackSwitch(CloudflareEntity, SwitchEntity):
 
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry)
-        data = entry.data
+        data = coordinator.zone
         self._attr_name = f"{data['zone_name']} Under Attack"
         self._attr_unique_id = (
             f"{self._prefix}_{data['zone_id']}_under_attack_switch".replace("@", "_").replace(".", "_").lower()

@@ -1,5 +1,6 @@
 """Setup with a scoped token: probes, list and rule creation, reconfigure and reauth."""
 import logging
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -29,6 +30,13 @@ def auth_error(*_args, **_kwargs):
 @pytest.fixture
 def flow_api():
     """A fresh account: valid token, one zone, no lists, no custom rules, AbuseIPDB key OK."""
+    with patch(SETUP, return_value=True), flow_api_mocks() as m:
+        yield m
+
+
+@contextmanager
+def flow_api_mocks():
+    """The setup-flow API calls, mocked; entry setup itself is left real."""
     names = [
         "verify_user_token", "verify_account_token", "fetch_zones", "probe_analytics",
         "get_security_level", "set_security_level", "fetch_ip_lists", "create_ip_list",
@@ -47,10 +55,11 @@ def flow_api():
     m.create_ip_list.return_value = NEW_LIST
     m.get_custom_entrypoint.return_value = None
     m.validate_abuseipdb_key.return_value = "ok"
-    with patch(SETUP, return_value=True):
+    try:
         yield m
-    for p in patches.values():
-        p.stop()
+    finally:
+        for p in patches.values():
+            p.stop()
 
 
 async def start(hass, user_input=USER_INPUT):
@@ -76,9 +85,11 @@ async def test_happy_path_creates_list_and_rules(hass, flow_api):
     assert data["api_token"] == TOKEN
     assert data["abuseipdb_token"] == ABUSE_KEY
     assert "email" not in data and "global_token" not in data
-    assert data["zone_id"] == ZONE_ID and data["account_id"] == ACCOUNT_ID
-    assert data["list_name"] == "block_ips" and data["list_id"] == LIST_ID
-    assert data["uid_prefix"] == ZONE_ID
+    assert data["zones"] == [{
+        "zone_id": ZONE_ID, "zone_name": "example.com", "account_id": ACCOUNT_ID,
+        "list_name": "block_ips", "list_id": LIST_ID, "uid_prefix": ZONE_ID,
+    }]
+    assert "zone_id" not in data and "uid_prefix" not in data
     assert data["mode"] == "Monitor" and data["abuse_confidence_score"] == 100.0
     assert data["recheck_days"] == 7 and data["scan_interval_minutes"] == 1
     assert result["result"].unique_id == ZONE_ID
@@ -117,7 +128,7 @@ async def test_existing_list_and_rules_are_reused_not_duplicated(hass, flow_api)
     result = await start(hass)
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["data"]["list_id"] == LIST_ID
+    assert result["data"]["zones"][0]["list_id"] == LIST_ID
     flow_api.create_ip_list.assert_not_called()
     # Edit is proven by writing the description back unchanged.
     flow_api.update_list_description.assert_called_once()
@@ -210,10 +221,10 @@ async def test_rules_present_with_read_only_waf_is_enough(hass, flow_api):
 async def test_several_zones_ask_which(hass, flow_api):
     flow_api.fetch_zones.return_value = [ZONE, OTHER_ZONE]
     result = await start(hass)
-    assert result["step_id"] == "zone_select"
-    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"zone_id": OTHER_ZONE["id"]})
+    assert result["step_id"] == "zones"
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"zones": [OTHER_ZONE["id"]]})
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["data"]["zone_name"] == "example.org"
+    assert [zone["zone_name"] for zone in result["data"]["zones"]] == ["example.org"]
 
 
 @pytest.mark.parametrize(
@@ -310,7 +321,7 @@ async def test_list_limit_offers_existing_lists(hass, flow_api):
     assert result["step_id"] == "list_select"
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {"list_name": "my_list"})
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["data"]["list_id"] == "aaaa"
+    assert result["data"]["zones"][0]["list_id"] == "aaaa"
     rules = flow_api.create_custom_entrypoint.call_args.args[1]
     assert rules[0]["expression"] == "(ip.src in $my_list)"
 
@@ -346,8 +357,9 @@ async def test_reconfigure_moves_a_global_key_entry_to_a_token(hass, flow_api, m
     assert result["reason"] == "reconfigure_successful"
     assert entry.data["api_token"] == TOKEN
     assert "email" not in entry.data and "global_token" not in entry.data
-    assert entry.data["uid_prefix"] == OLD_EMAIL
-    assert entry.data["list_id"] == LIST_ID
+    zone = entry.data["zones"][0]
+    assert zone["uid_prefix"] == OLD_EMAIL and zone["legacy_storage"] is True
+    assert zone["list_id"] == LIST_ID
     assert entry.data["abuseipdb_token"] == ABUSE_KEY
     flow_api.create_ip_list.assert_not_called()
 
@@ -358,6 +370,7 @@ async def test_reconfigure_wrong_zone(hass, flow_api, make_entry):
     result = await entry.start_reconfigure_flow(hass)
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {"api_token": "other"})
     assert result["errors"] == {"base": "wrong_zone"}
+    assert result["description_placeholders"]["zone"] == "example.com"
 
 
 async def test_reauth_flow(hass, flow_api, make_entry):
@@ -369,7 +382,7 @@ async def test_reauth_flow(hass, flow_api, make_entry):
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reauth_successful"
     assert entry.data["api_token"] == "new-token-xyz"
-    assert entry.data["uid_prefix"] == OLD_EMAIL
+    assert entry.data["zones"][0]["uid_prefix"] == OLD_EMAIL
 
 
 async def test_reauth_with_missing_permission(hass, flow_api, make_entry):
@@ -383,14 +396,16 @@ async def test_reauth_with_missing_permission(hass, flow_api, make_entry):
 
 # --- options ------------------------------------------------------------------------------
 
-async def test_options_flow(hass, make_entry):
+async def test_options_flow(hass, flow_api, make_entry):
     entry = make_entry()
+    await hass.config_entries.async_setup(entry.entry_id)  # setup is patched: runs the migration only
     with patch(SETUP, return_value=True):
         result = await hass.config_entries.options.async_init(entry.entry_id)
         assert result["type"] is FlowResultType.FORM
         result = await hass.config_entries.options.async_configure(
             result["flow_id"],
             {
+                "zones": [ZONE_ID],
                 "abuse_confidence_score": 75,
                 "mode": "Active",
                 "recheck_enabled": False,

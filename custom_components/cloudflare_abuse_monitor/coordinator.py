@@ -1,4 +1,8 @@
-"""One polling cycle per config entry: traffic, skip IPs, block list, AbuseIPDB and Under Attack Mode."""
+"""One polling cycle per zone: traffic, skip IPs, block list, AbuseIPDB and Under Attack Mode.
+
+An entry has one coordinator per zone. The zones of an entry take turns (ZonePacer), so a
+token with many zones never sends its requests all at once.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -20,6 +24,7 @@ from .const import (
     CHECKED_IPS_FILENAME,
     CONF_ABUSEIPDB_TOKEN,
     CONF_API_TOKEN,
+    CONF_LEGACY_STORAGE,
     CONF_RECHECK_ENABLED,
     DEFAULT_ABUSE_CONFIDENCE_SCORE,
     DEFAULT_RECHECK_DAYS,
@@ -30,6 +35,7 @@ from .const import (
     MODE_ACTIVE,
     MODE_MONITOR,
     UNDER_ATTACK_LEVEL,
+    ZONE_STAGGER_SECONDS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -40,9 +46,37 @@ STORAGE_VERSION = 1
 _CACHE_LOCK = asyncio.Lock()
 
 
-def owned_level_store(hass: HomeAssistant, entry_id: str) -> Store:
-    """Per entry: who turned Under Attack Mode on, the level to restore, and unblocked IPs."""
-    return Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry_id}")
+def owned_level_store(hass: HomeAssistant, entry_id: str, zone: dict | None = None) -> Store:
+    """Per zone: who turned Under Attack Mode on, the level to restore, and unblocked IPs.
+
+    The zone moved from a v1.6 entry keeps the file it had (named after the entry only).
+    """
+    if zone is None or zone.get(CONF_LEGACY_STORAGE):
+        return Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry_id}")
+    return Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry_id}.{zone['zone_id']}")
+
+
+class ZonePacer:
+    """Shared by the coordinators of one entry: one zone cycle at a time, spaced apart."""
+
+    def __init__(self, gap: float | None = None) -> None:
+        self.lock = asyncio.Lock()
+        self.gap = ZONE_STAGGER_SECONDS if gap is None else gap
+        self._last_zone: str | None = None
+        self._next_start = 0.0
+
+    async def run(self, zone_id: str, coro_factory):
+        async with self.lock:
+            loop = asyncio.get_running_loop()
+            wait = self._next_start - loop.time()
+            # Right after another zone's cycle: wait the gap. The same zone again: no wait.
+            if wait > 0 and self._last_zone not in (None, zone_id):
+                await asyncio.sleep(wait)
+            try:
+                return await coro_factory()
+            finally:
+                self._last_zone = zone_id
+                self._next_start = loop.time() + self.gap
 
 
 def _read_cache(path: str) -> dict:
@@ -82,23 +116,42 @@ def parse_cache_entry(value) -> tuple[datetime | None, float | None]:
 
 
 class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Fetches everything the sensors show in one pass, every scan_interval_minutes."""
+    """Fetches everything one zone's sensors show in one pass, every scan_interval_minutes."""
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+    def __init__(
+        self, hass: HomeAssistant, entry: ConfigEntry, zone: dict, pacer: ZonePacer | None = None
+    ) -> None:
         self.entry = entry
+        self.zone = dict(zone)
+        self.pacer = pacer or ZonePacer()
+        # Every coordinator of the entry, set by async_setup_entry: an unblocked IP is
+        # remembered by every zone that blocks with the same list.
+        self.peers: list[CloudflareAbuseMonitorCoordinator] = [self]
         minutes = max(1, int(self.option("scan_interval_minutes", DEFAULT_SCAN_INTERVAL_MINUTES)))
         super().__init__(
             hass,
             _LOGGER,
             config_entry=entry,
-            name=f"Cloudflare {entry.data['zone_name']}",
+            name=f"Cloudflare {zone['zone_name']}",
             update_interval=timedelta(minutes=minutes),
         )
         self._cache_path = hass.config.path(CHECKED_IPS_FILENAME)
-        self._store = owned_level_store(hass, entry.entry_id)
+        self._store = owned_level_store(hass, entry.entry_id, zone)
         self._state: dict[str, Any] | None = None
         # (window start, request count, time) from the previous cycle, for the Under Attack delta.
         self._last_count: tuple[str, int, datetime] | None = None
+
+    @property
+    def zone_id(self) -> str:
+        return self.zone["zone_id"]
+
+    @property
+    def list_key(self) -> tuple[str, str]:
+        return self.zone["account_id"], self.zone["list_id"]
+
+    def list_peers(self) -> list[CloudflareAbuseMonitorCoordinator]:
+        """This zone and every other zone of the entry that blocks with the same list."""
+        return [peer for peer in self.peers if peer.list_key == self.list_key]
 
     def option(self, key: str, default):
         return self.entry.options.get(key, self.entry.data.get(key, default))
@@ -122,7 +175,10 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return None, str(err) or type(err).__name__
 
     async def _async_update_data(self) -> dict[str, Any]:
-        data = self.entry.data
+        return await self.pacer.run(self.zone_id, self._async_update_zone)
+
+    async def _async_update_zone(self) -> dict[str, Any]:
+        data = self.zone
         headers = self.headers
         now = dt_util.utcnow()
         window = (api.iso_utc(now.replace(hour=0, minute=0, second=0, microsecond=0)), api.iso_utc(now))
@@ -175,7 +231,7 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         }
 
     async def _async_high_risk(self, skip_ips, list_ips, headers, now) -> dict[str, Any]:
-        data = self.entry.data
+        data = self.zone
         threshold = int(float(self.option("abuse_confidence_score", DEFAULT_ABUSE_CONFIDENCE_SCORE)))
         recheck_days = int(self.option("recheck_days", DEFAULT_RECHECK_DAYS))
         recheck_enabled = bool(self.option(CONF_RECHECK_ENABLED, True))
@@ -198,7 +254,7 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         continue
                     ips_to_check.append(ip)
                     try:
-                        result = await self._job(api.check_abuse_ip, ip, data[CONF_ABUSEIPDB_TOKEN])
+                        result = await self._job(api.check_abuse_ip, ip, self.entry.data[CONF_ABUSEIPDB_TOKEN])
                     except api.AbuseIPDBRateLimited:
                         _LOGGER.warning("AbuseIPDB daily quota reached; the remaining IPs wait for a later cycle")
                         stop_lookups = True
@@ -240,7 +296,7 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     async def _async_under_attack(self, traffic, headers, now) -> dict[str, Any]:
-        zone_id = self.entry.data["zone_id"]
+        zone_id = self.zone_id
         mode = self.option("mode", MODE_MONITOR)
         enabled = bool(self.option("under_attack_mode", False))
         threshold = int(self.option("under_attack_request_threshold", DEFAULT_UNDER_ATTACK_THRESHOLD))
@@ -284,9 +340,9 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "enabled_by_integration": owned["enabled_by_us"],
         }
         if mode != MODE_ACTIVE:
-            attrs["reason"] = "Monitoring mode is active"
+            attrs["reason"] = "Monitor mode is active"
         elif not enabled:
-            attrs["reason"] = "Under attack mode is disabled"
+            attrs["reason"] = "Automatic Under Attack Mode is disabled"
         return _section("on" if active else "off", attrs)
 
     async def _async_state(self) -> dict[str, Any]:
@@ -316,7 +372,7 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def async_set_under_attack(self, on: bool) -> None:
         """The Under Attack switch: on remembers the level it replaces, off restores it."""
-        zone_id = self.entry.data["zone_id"]
+        zone_id = self.zone_id
         headers = self.headers
         state = await self._async_state()
         level = await self._call(api.get_security_level, zone_id, headers)
@@ -342,25 +398,31 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 await self._job(_write_cache, self._cache_path, cache)
         return result
 
-    async def async_block_ip(self, ip: str) -> None:
-        data = self.entry.data
-        await self._call(api.add_ips_to_list, data["account_id"], data["list_id"], [ip], self.headers)
+    async def _async_set_allowed(self, ip: str, allowed: bool) -> None:
         state = await self._async_state()
-        if ip in state["allowed_ips"]:
+        if allowed and ip not in state["allowed_ips"]:
+            await self._async_save_state(allowed_ips=[*state["allowed_ips"], ip])
+        elif not allowed and ip in state["allowed_ips"]:
             await self._async_save_state(allowed_ips=[a for a in state["allowed_ips"] if a != ip])
+
+    async def async_block_ip(self, ip: str) -> None:
+        data = self.zone
+        await self._call(api.add_ips_to_list, data["account_id"], data["list_id"], [ip], self.headers)
+        for peer in self.list_peers():
+            await peer._async_set_allowed(ip, False)
         await self.async_request_refresh()
 
     async def async_unblock_ip(self, ip: str) -> bool:
         """Remove ip from the list and never add it back automatically. False: it was not listed."""
-        data = self.entry.data
+        data = self.zone
         items = await self._call(api.get_list_items, data["account_id"], data["list_id"], self.headers)
         item_id = items.get(ip)
         if item_id is None:
             return False  # nothing changes: the IP is not exempted from Active mode either
         await self._call(api.remove_list_items, data["account_id"], data["list_id"], [item_id], self.headers)
-        state = await self._async_state()
-        if ip not in state["allowed_ips"]:
-            await self._async_save_state(allowed_ips=[*state["allowed_ips"], ip])
+        # The list is shared: no zone that blocks with it may add the IP back in Active mode.
+        for peer in self.list_peers():
+            await peer._async_set_allowed(ip, True)
         await self.async_request_refresh()
         return True
 

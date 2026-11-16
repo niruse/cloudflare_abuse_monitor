@@ -11,7 +11,9 @@ from homeassistant.helpers import entity_registry as er
 from custom_components.cloudflare_abuse_monitor import api
 from custom_components.cloudflare_abuse_monitor.diagnostics import async_get_config_entry_diagnostics
 
-from .conftest import ABUSE_KEY, ACCOUNT_ID, DOMAIN, ENTRY_DATA, LEGACY_DATA, LIST_ID, OLD_EMAIL, TOKEN, ZONE_ID
+from .conftest import (
+    ABUSE_KEY, ACCOUNT_ID, DOMAIN, ENTRY_DATA, LEGACY_DATA, LIST_ID, OLD_EMAIL, TOKEN, ZONE_ID, coord,
+)
 from .test_sensors import UNIQUE_IDS
 
 SWITCH_UID = f"owner_example_com_{ZONE_ID}_under_attack_switch"
@@ -36,8 +38,8 @@ def switch_id(hass):
 async def test_global_key_entry_migrates_and_asks_for_a_token(hass, config_dir, cf, make_entry):
     entry = make_entry(data=LEGACY_DATA, minor_version=1)
     await setup(hass, entry)
-    assert entry.minor_version == 2
-    assert entry.data["uid_prefix"] == OLD_EMAIL
+    assert entry.minor_version == 3
+    assert entry.data["zones"][0]["uid_prefix"] == OLD_EMAIL
     assert entry.state is ConfigEntryState.SETUP_ERROR
     assert len(reauth_flows(hass)) == 1
     cf.traffic.assert_not_called()
@@ -81,7 +83,7 @@ async def test_revoked_token_starts_reauth(hass, config_dir, cf, make_entry):
     await setup(hass, entry)
     assert entry.state is ConfigEntryState.LOADED
     cf.skip.side_effect = api.CloudflareAuthError("GraphQL: not authorized", 403)
-    await entry.runtime_data.async_refresh()
+    await coord(entry).async_refresh()
     await hass.async_block_till_done()
     assert len(reauth_flows(hass)) == 1
     await hass.config_entries.async_unload(entry.entry_id)
@@ -110,7 +112,7 @@ async def test_token_never_logged(hass, config_dir, cf, make_entry, caplog):
     cf.abuse.side_effect = lambda ip, key: {"ip": ip, "error": "500: no detail"}
     entry = make_entry(mode="Active")
     await setup(hass, entry)
-    await entry.runtime_data.async_refresh()
+    await coord(entry).async_refresh()
     assert "failed" in caplog.text
     assert TOKEN not in caplog.text and ABUSE_KEY not in caplog.text
     await hass.config_entries.async_unload(entry.entry_id)
@@ -127,7 +129,7 @@ async def test_switch_turns_on_and_restores_previous_level(hass, config_dir, cf,
     await hass.services.async_call("switch", "turn_on", {"entity_id": entity_id}, blocking=True)
     assert cf.set_level.call_args.args[2] == "under_attack"
     cf.get_level.return_value = "under_attack"
-    await entry.runtime_data.async_refresh()
+    await coord(entry).async_refresh()
     await hass.async_block_till_done()
     assert hass.states.get(entity_id).state == "on"
     # Automation is off, but a level set with the switch is not undone by the next update.
@@ -236,7 +238,7 @@ async def test_switch_is_unknown_when_its_section_failed(hass, config_dir, cf, m
     cf.traffic.side_effect = api.CloudflareApiError("GraphQL: HTTP 502: no detail", 502)
     entry = make_entry()
     await setup(hass, entry)
-    assert entry.runtime_data.data["under_attack"]["value"] == "error"
+    assert coord(entry).data["under_attack"]["value"] == "error"
     assert hass.states.get(switch_id(hass)).state == "unknown"
     await hass.config_entries.async_unload(entry.entry_id)
 
@@ -248,7 +250,7 @@ async def test_unblock_of_an_unlisted_ip_changes_nothing(hass, config_dir, cf, m
     with pytest.raises(ServiceValidationError):
         await hass.services.async_call(DOMAIN, "unblock_ip", {"ip": "203.0.113.10"}, blocking=True)
     cf.remove.assert_not_called()
-    assert (await entry.runtime_data._async_state())["allowed_ips"] == []
+    assert (await coord(entry)._async_state())["allowed_ips"] == []
 
     # So Active mode still blocks it when it turns out to be high risk.
     hass.config_entries.async_update_entry(entry, options={"mode": "Active"})

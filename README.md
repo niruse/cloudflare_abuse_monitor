@@ -2,34 +2,34 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://hacs.xyz)
 
-A Home Assistant custom integration that watches the visitors of a **Cloudflare** zone, looks each new IP address up on **AbuseIPDB**, and can block the dangerous ones in Cloudflare's firewall. It can also turn on Cloudflare's **Under Attack Mode** when traffic spikes, or by hand with a switch.
+A Home Assistant custom integration that monitors the visitors of one or more **Cloudflare** zones, checks each new IP address on **AbuseIPDB**, and can block high-risk addresses in the Cloudflare firewall. It can also enable Cloudflare **Under Attack Mode** automatically on a traffic spike, or manually with a switch.
 
-Install it through [HACS](https://hacs.xyz) as a custom repository, or copy it by hand.
+The integration can be installed through [HACS](https://hacs.xyz) as a custom repository, or copied manually.
 
-If you find it useful, you can [buy me a coffee](https://coff.ee/niruse).
+To support the project, you can [buy the author a coffee](https://coff.ee/niruse).
 
 ---
 
-## What it does
+## Overview
 
-Every update (every minute by default) the integration:
+At every update (every minute by default) the integration performs the following steps for each monitored zone:
 
-1. Reads today's traffic for the zone (requests, page views, bytes) from Cloudflare's GraphQL analytics.
-2. Reads the IP addresses that hit the **Skip rule** today. These are your visitors (see [the firewall rules](#the-firewall-rules-it-creates) for why a Skip rule is needed).
-3. Reads the IPs already in your Cloudflare IP list (`block_ips`).
-4. Looks every visitor that is not in the list yet up on AbuseIPDB, once, and again after a number of days if rechecking is on. Scores are cached, so an IP costs one AbuseIPDB lookup, not one per update.
-5. Marks IPs whose score reaches your threshold as **high risk**. In **Active** mode it adds them to the IP list, and Cloudflare's Block rule blocks them. In **Monitor** mode it only reports them.
-6. In **Active** mode, with Under Attack automation on, turns on Under Attack Mode when the number of requests between two updates reaches your threshold.
+1. It reads the traffic of the current day (requests, page views, bytes) from the Cloudflare GraphQL analytics.
+2. It reads the IP addresses that matched the **Skip rule** today. These are the visitors of the zone (see [The firewall rules](#the-firewall-rules) for the reason a Skip rule is required).
+3. It reads the IP addresses already in the Cloudflare IP list (`block_ips`).
+4. It checks every visitor that is not yet in the list on AbuseIPDB, once, and again after a configurable number of days if rechecking is enabled. Scores are cached, so each IP address costs one AbuseIPDB lookup rather than one per update.
+5. It classifies IP addresses whose score reaches the configured threshold as **high risk**. In **Active** mode it adds them to the IP list, and the Cloudflare Block rule blocks them. In **Monitor** mode it only reports them.
+6. In **Active** mode, with automatic Under Attack Mode enabled, it enables Under Attack Mode when the number of requests between two updates reaches the configured threshold.
 
-Everything happens with one scoped Cloudflare API token that can touch only your zone and its IP lists.
+All access uses one scoped Cloudflare API token, which can access only the selected zones and the IP lists of their accounts.
 
 ---
 
 ## Requirements
 
-- **A Cloudflare zone**: a domain on a [Cloudflare](https://dash.cloudflare.com/) account. The Free plan is enough (it allows 5 custom rules and 1 IP list; the integration needs 2 rules and 1 list).
-- **An AbuseIPDB API key**: sign up at [AbuseIPDB](https://www.abuseipdb.com/) and create a key under **Account > API**. The free plan allows 1,000 lookups a day.
-- Home Assistant 2025.12 or newer.
+- **One or more Cloudflare zones**: domains on a [Cloudflare](https://dash.cloudflare.com/) account. The Free plan is sufficient: it allows five custom rules per zone and one IP list per account, and the integration requires two rules per zone and one list per account.
+- **An AbuseIPDB API key**: register at [AbuseIPDB](https://www.abuseipdb.com/) and create a key under **Account > API**. The free plan allows 1,000 lookups per day.
+- Home Assistant 2025.12 or later.
 
 ---
 
@@ -37,11 +37,11 @@ Everything happens with one scoped Cloudflare API token that can touch only your
 
 ### HACS
 
-1. Open **HACS**, then the three-dots menu > **Custom repositories**.
+1. Open **HACS**, then select the three-dots menu > **Custom repositories**.
 2. Add `https://github.com/niruse/cloudflare_abuse_monitor` with the type **Integration**.
 3. Install **Cloudflare Abuse Monitor** and restart Home Assistant.
 
-### Manual
+### Manual installation
 
 1. Copy the `custom_components/cloudflare_abuse_monitor` folder into `/config/custom_components/`.
 2. Restart Home Assistant.
@@ -51,38 +51,47 @@ Everything happens with one scoped Cloudflare API token that can touch only your
 ## Setup
 
 1. Go to **Settings > Devices & services > + Add integration** and search for **Cloudflare Abuse Monitor**.
-2. Click **Create a Cloudflare API token** in the form. It opens Cloudflare's "create account API token" page (pick your account if asked) with the token name and all five permissions pre-filled.
-3. **Check that the five permission rows below are there** (if one is missing, add it with **+ Add more**), and under **Zone Resources** choose only your zone.
+2. Select **Create a Cloudflare API token** in the form. The link opens the Cloudflare "Create account API token" page (select your account if prompted), with the token name and all five permissions prefilled.
+3. **Verify that the following five permissions are listed.** If one is missing, add it with **+ Add more**.
 
-   | Permission | Why the integration needs it |
+   | Permission | Purpose |
    |---|---|
-   | Zone > Zone > Read | Finds your zone and the account it belongs to. |
-   | Zone > Analytics > Read | The traffic summary, and the visitors seen by the Skip rule (GraphQL `httpRequests1hGroups` and `firewallEventsAdaptive`). |
-   | Zone > Zone Settings > Edit | Reads and changes the zone's security level, which is how Under Attack Mode is turned on and off. |
-   | Zone > Zone WAF > Edit | Reads your custom firewall rules, and creates the Block and Skip rules during setup if they are missing. **Read** is enough if you create both rules yourself. |
-   | Account > Account Filter Lists > Edit | Reads the IP list, adds and removes IPs, and creates the `block_ips` list during setup. |
+   | Zone > Zone > Read | Lists the zones and the account each zone belongs to. |
+   | Zone > Analytics > Read | Reads the traffic summary and the visitors recorded by the Skip rule (GraphQL `httpRequests1hGroups` and `firewallEventsAdaptive`). |
+   | Zone > Zone Settings > Edit | Reads and changes the security level of a zone, which is how Under Attack Mode is enabled and disabled. |
+   | Zone > Zone WAF > Edit | Reads the custom firewall rules, and creates the Block and Skip rules during setup if they are missing. **Read** is sufficient if you create both rules yourself. |
+   | Account > Account Filter Lists > Edit | Reads the IP list, adds and removes IP addresses, and creates the `block_ips` list during setup. |
 
-   Nothing else is needed: no DNS, no account settings, no billing, no other zones.
+   No other permission is required: no DNS, account settings or billing access.
 
-4. **Narrow the token (required).** The link starts with *all accounts* and *all zones*, because Cloudflare's link format needs a value there. Under **Account Resources** choose your account. Under **Zone Resources** choose **Specific zone** and your zone. The token can then touch nothing else.
-5. Create the token, copy it, and paste it into the form together with your AbuseIPDB API key.
+4. **Restrict the token (required).** The link preselects *all accounts* and *all zones*, because the Cloudflare link format requires a value. Under **Account Resources**, select your account. Under **Zone Resources**, select the zones to be monitored: **Specific zone** for each zone, or **All zones from an account**. The token then has no access to anything else.
+5. Create the token, copy it, and enter it in the form together with your AbuseIPDB API key.
+6. **Select the zones.** If the token can access more than one zone that is not yet monitored, a list with a checkbox for each zone is shown. All zones are selected by default; deselect any zone that should not be monitored. If the zones belong to different accounts, each entry shows the account name. If the token can access exactly one such zone, this step is skipped.
 
-That is all. The integration then does the rest by itself:
+The integration then completes the setup automatically:
 
-- checks the token with Cloudflare (`/user/tokens/verify`, or the account endpoint for an account-owned token) and refuses a disabled or expired one;
-- finds the zones the token can read: one is picked automatically, otherwise you choose;
-- reads the account from the zone;
-- checks the AbuseIPDB key with a single lookup (if today's quota is already used up, the key is accepted with a warning in the log);
-- tests every permission without changing anything: one analytics row, the security level written back unchanged, the IP lists read, the custom rules read. Every missing permission is named in the form, all at once, and nothing is created until all of them pass;
-- uses the IP list `block_ips` if it exists (it proves the Edit permission by writing the list's description back unchanged), or creates it. If your plan's list limit is reached, you can choose one of your existing IP lists instead;
-- creates the Block and Skip rules if they are missing. Existing rules are never replaced or duplicated;
-- starts in **Monitor** mode with these defaults, which you can change under **Configure**: score threshold 100, rechecking on after 7 days, an update every minute, Under Attack automation off.
+- It verifies the token with Cloudflare (`/user/tokens/verify`, or the account endpoint for an account-owned token, once per account) and rejects a disabled or expired token.
+- It lists every zone the token can access. Zones that another entry of this integration already monitors are not offered again.
+- It verifies the AbuseIPDB key with a single lookup. If the daily quota is already used up, the key is accepted and a warning is written to the log.
+- For each selected zone, it tests every permission without changing anything: one analytics row is read, the security level is written back unchanged, the IP lists are read, and the custom rules are read. Every missing permission is reported in the form, together with the zone concerned, and nothing is created for that zone until all checks pass.
+- For each account, it uses the IP list `block_ips` if it exists (the Edit permission is verified by writing the description of the list back unchanged), or creates it. All selected zones of the same account share this one list; zones of a different account use that account's own list. If the list limit of the plan is reached, an existing IP list can be selected instead.
+- For each zone, it creates the Block and Skip rules if they are missing. Existing rules are never replaced or duplicated.
+- It starts in **Monitor** mode with the following defaults, which can be changed under **Configure**: score threshold 100, rechecking enabled after 7 days, an update every minute, and automatic Under Attack Mode disabled.
 
 The token and the AbuseIPDB key are stored only in Home Assistant. They are never written to the log, and diagnostics downloads redact them together with the zone, account and list identifiers.
 
-### The firewall rules it creates
+### Several zones
 
-In Cloudflare: your zone > **Security > Security rules > Custom rules**.
+- One configuration entry corresponds to one Cloudflare API token. It can monitor any number of zones, in one or more Cloudflare accounts.
+- Each zone is a separate device (for example **Cloudflare example.com**) with its own five sensors and its own Under Attack Mode switch.
+- The IP list belongs to the Cloudflare account: zones of the same account block with the same list, so an address blocked for one zone is blocked for all zones of that account.
+- The zones of an entry are updated one after another, one second apart, so that a token with many zones never sends a burst of requests to Cloudflare (Cloudflare allows 1,200 requests per five minutes per user).
+- A zone that cannot be reached does not prevent the other zones from loading; its entities become available again at the next successful update.
+- To monitor zones with a different token, add the integration again with that token. A zone can belong to only one entry.
+
+### The firewall rules
+
+In Cloudflare: select the zone > **Security > Security rules > Custom rules**.
 
 **Block listed IPs**
 ```
@@ -96,43 +105,65 @@ not (ip.src in $block_ips)
 Action: Skip (all remaining custom rules), Log matching requests: on
 ```
 
-Why a Skip rule? Cloudflare's firewall events only record a request when a rule acted on it, and the integration reads the visitors that hit a Skip action. This rule matches everyone who is not already blocked, and because it is the last custom rule it skips nothing that would otherwise run.
+A Skip rule is required because Cloudflare firewall events record a request only when a rule acted on it, and the integration reads the visitors that matched a Skip action. This rule matches every visitor who is not already blocked, and because it is the last custom rule it does not skip any rule that would otherwise run.
 
-How existing rules are handled:
+Existing rules are handled as follows:
 
-- A Block rule counts as present when its expression is exactly `ip.src in $block_ips` (spacing, case and outer parentheses do not matter). A rule for another list, or with extra conditions, does not count.
-- A Skip rule counts as present when it is logged and matches (almost) every visitor: the rule above, `true`, or the "Skip by country" rule with every country listed that older versions of this README asked for. A narrow skip, for example for your uptime monitor's IP, does not count, because the sensors would then see only that traffic. The integration adds its own Skip rule at the end.
-- A new Block rule is placed **before** the first rule that skips the remaining custom rules. Placed after it, it would never run for the requests that skip matches, and Active mode would list IPs that are never blocked.
-- When there are no custom rules at all, both rules are created in one step. Otherwise each missing rule is added on its own; your other rules are never touched.
+- A Block rule is considered present when its expression is exactly `ip.src in $block_ips` (spacing, letter case and outer parentheses are ignored). A rule for another list, or with additional conditions, is not considered a match.
+- A Skip rule is considered present when it is logged and matches (almost) every visitor: the rule above, `true`, or the "Skip by country" rule with every country listed, as described in older versions of this README. A narrow skip, for example for the IP address of an uptime monitor, is not considered a match, because the sensors would then see only that traffic. In that case the integration adds its own Skip rule at the end.
+- A new Block rule is placed **before** the first rule that skips the remaining custom rules. If it were placed after such a rule, it would never run for the requests that rule matches, and Active mode would list IP addresses that are never blocked.
+- If a zone has no custom rules at all, both rules are created in one step. Otherwise each missing rule is added individually; other rules are never modified.
 
-**Prefer to create the rules yourself?** Create both rules as shown before setup. When both exist, the token needs only **Zone > Zone WAF > Read**: the integration writes rules only during setup, never afterwards.
+**Creating the rules manually.** Create both rules as shown above before the setup. When both rules exist, the token requires only **Zone > Zone WAF > Read**: the integration writes rules only during setup and when a zone is added, never afterwards.
 
-### A new token later (reconfigure and reauthentication)
+### Replacing the token (reconfiguration and reauthentication)
 
-- **Settings > Devices & services > Cloudflare Abuse Monitor > three dots > Reconfigure** asks for a new token. It must be able to read the zone this entry monitors, and it goes through the same permission checks.
-- If Cloudflare rejects the token while the integration runs (HTTP 401/403, or an authorization error from analytics), Home Assistant shows a **Reauthenticate** notice. Paste a new token there. Server errors (5xx) and plan limits do not start reauthentication; they show as an `error` attribute on the sensor that failed.
-
-### Upgrading from v1.5 (Global API Key)
-
-v1.6 no longer accepts the email + Global API Key. After the update, a setup that uses them shows a **Reauthenticate** notice. Create a token as described above and paste it. The email and the Global API Key are then deleted from Home Assistant. Entity IDs and unique IDs stay the same, so dashboards and automations keep working. Entity display names no longer contain the email.
+- **Settings > Devices & services > Cloudflare Abuse Monitor > three-dots menu > Reconfigure** requests a new token. The new token must have access to every zone that the entry monitors, and it is subject to the same permission checks for each zone.
+- If Cloudflare rejects the token while the integration is running (HTTP 401 or 403, or an authorization error from the analytics API), Home Assistant shows a **Reauthenticate** notification, where a new token can be entered. Server errors (5xx) and plan limits do not trigger reauthentication; they appear as an `error` attribute on the affected sensor.
 
 ---
 
 ## Options
 
-**Settings > Devices & services > Cloudflare Abuse Monitor > Configure.** Saving reloads the integration; no restart is needed.
+**Settings > Devices & services > Cloudflare Abuse Monitor > Configure.** Saving reloads the integration; a restart is not required.
 
-| Option | Default | What it does |
+**Zones.** The options form shows a checkbox for every zone the token can access (except zones monitored by another entry). The zones of this entry are selected.
+
+- **Selecting a zone** sets it up exactly as during the initial setup: the permission checks run, the IP list of its account is used (or created if the account has none yet), and the Block and Skip rules are created if they are missing.
+- **Deselecting a zone** removes its device and entities from Home Assistant. Its firewall rules and the IP list remain in Cloudflare unchanged, so blocking continues; remove them in the Cloudflare dashboard if they are no longer needed.
+- If Cloudflare cannot be reached, only the configured zones are listed. Zones can still be removed and the other options can still be changed.
+- At least one zone must remain selected. To stop monitoring entirely, delete the integration entry.
+
+The other options apply to every zone of the entry:
+
+| Option | Default | Description |
 |---|---|---|
-| `abuse_confidence_score` | `100` | AbuseIPDB score (0-100) from which an IP counts as high risk. |
-| `mode` | `Monitor` | `Monitor` only reports high-risk IPs. `Active` also adds them to the IP list, and enables Under Attack automation. |
-| `recheck_enabled` | on | Look IPs up again after `recheck_days`. Off: every IP is looked up only once. |
-| `recheck_days` | `7` | Days before an IP is looked up again (when rechecking is on). |
-| `under_attack_mode` | off | Turn Under Attack Mode on automatically on a traffic spike. Works only in `Active` mode. |
-| `under_attack_request_threshold` | `15000` | Requests between two updates that count as a spike. |
-| `scan_interval_minutes` | `1` | How often the integration updates, in minutes. |
+| `abuse_confidence_score` | `100` | AbuseIPDB confidence score (0-100) from which an IP address is classified as high risk. |
+| `mode` | `Monitor` | `Monitor` only reports high-risk IP addresses. `Active` also adds them to the IP list and enables automatic Under Attack Mode. |
+| `recheck_enabled` | enabled | Checks IP addresses again after `recheck_days`. When disabled, every IP address is checked only once. |
+| `recheck_days` | `7` | Days before an IP address is checked again (when rechecking is enabled). |
+| `under_attack_mode` | disabled | Enables Under Attack Mode automatically on a traffic spike. Effective only in `Active` mode. |
+| `under_attack_request_threshold` | `15000` | Requests between two updates of a zone that are classified as a traffic spike. Applied to each zone separately. |
+| `scan_interval_minutes` | `1` | Update interval, in minutes. |
 
-Setup itself asks only for the token and the AbuseIPDB key. Reconfigure and reauthentication ask only for a new token.
+---
+
+## Upgrading
+
+### From v1.6 (one zone per entry)
+
+The upgrade to v1.7 is automatic; no new setup is required. At the first start, the existing entry is converted:
+
+- The zone, its IP list and the unique-ID prefix are moved into the new list of zones of the entry.
+- The existing device is kept and receives the new per-zone identifier, so all entity IDs, unique IDs, history, dashboards and automations remain unchanged.
+- The stored Under Attack Mode state (the security level to restore) and the IP addresses released with `unblock_ip` are kept.
+- Additional zones can then be added under **Configure**. Zones of the same account use the existing IP list.
+
+If more zones were previously monitored with several entries, those entries continue to work unchanged. They can be kept, or deleted and their zones added to one entry under **Configure**; after deletion the entity IDs of the re-added zones may differ.
+
+### From v1.5 (Global API Key)
+
+Since v1.6 the email address and Global API Key are no longer accepted. After the update, an entry that uses them shows a **Reauthenticate** notification. Create a token as described above and enter it. The email address and the Global API Key are then deleted from Home Assistant. Entity IDs and unique IDs remain the same, so dashboards and automations continue to work.
 
 ---
 
@@ -140,53 +171,59 @@ Setup itself asks only for the token and the AbuseIPDB key. Reconfigure and reau
 
 | | Monitor | Active |
 |---|---|---|
-| Traffic, visitors and list are read | yes | yes |
-| Visitors are looked up on AbuseIPDB | yes | yes |
-| High-risk IPs are added to the IP list (and blocked by the Block rule) | no | yes |
-| Under Attack Mode is turned on automatically on a spike (if `under_attack_mode` is on) | no | yes |
-| The Under Attack switch and the services work | yes | yes |
+| Traffic, visitors and the IP list are read | yes | yes |
+| Visitors are checked on AbuseIPDB | yes | yes |
+| High-risk IP addresses are added to the IP list (and blocked by the Block rule) | no | yes |
+| Under Attack Mode is enabled automatically on a traffic spike (if `under_attack_mode` is enabled) | no | yes |
+| The Under Attack Mode switch and the services are available | yes | yes |
 
-A high-risk IP stays a candidate until it really is in the list, so switching from Monitor to Active blocks the IPs already found. An IP removed with the `unblock_ip` service is never added back automatically.
+A high-risk IP address remains a candidate until it is actually in the list, so switching from Monitor to Active blocks the addresses already found. An IP address removed with the `unblock_ip` action is never added again automatically, by any zone that uses the same list.
 
 ### Under Attack Mode
 
-- **Automatic** (Active mode and `under_attack_mode` on): when the requests counted since the previous update reach `under_attack_request_threshold`, the zone's security level is set to `under_attack`. The integration remembers the level it replaced. The count resets at midnight UTC, and a restart or a missed update never reads as a spike.
-- It stays on until you turn `under_attack_mode` off or switch to Monitor. The integration then restores the level it replaced. It never changes a level it did not set itself.
-- **The Under Attack switch** turns it on and off by hand, in either mode. On remembers the level it replaces; off restores it, or sets `high` if Under Attack Mode was turned on somewhere else (for example in the Cloudflare dashboard). A level set with the switch is not undone by the automatic logic.
+- **Automatic** (Active mode and `under_attack_mode` enabled): when the requests counted for a zone since its previous update reach `under_attack_request_threshold`, the security level of that zone is set to `under_attack`. The integration stores the level it replaced. The count resets at midnight UTC, and a restart or a missed update is never interpreted as a spike.
+- Under Attack Mode remains enabled until `under_attack_mode` is disabled or the mode is changed to Monitor. The integration then restores the level it replaced. It never changes a level that it did not set itself.
+- **The Under Attack Mode switch** of each zone enables and disables it manually, in either mode. Enabling stores the level it replaces; disabling restores that level, or sets `high` if Under Attack Mode was enabled elsewhere (for example in the Cloudflare dashboard). A level set with the switch is not reverted by the automatic logic.
 
 ### Rechecking
 
-Each IP is looked up once and its score is stored in `/config/cloudflare_checked_ips.json` (shared by all configured zones). With rechecking on, an IP seen again after `recheck_days` is looked up again; with it off, never. A failed lookup is not stored, so it is retried on the next update. When AbuseIPDB's daily quota is used up, the remaining IPs wait for a later update.
+Each IP address is checked once, and its score is stored in `/config/cloudflare_checked_ips.json`, which is shared by all zones and entries. With rechecking enabled, an IP address seen again after `recheck_days` is checked again; with rechecking disabled, it is never checked again. A failed lookup is not stored, so it is retried at the next update. When the AbuseIPDB daily quota is used up, the remaining IP addresses are checked at a later update.
 
 ---
 
 ## Entities
 
-All entities belong to one device per zone, **Cloudflare Abuse Monitor**. For a zone `example.com` the entity IDs look like this (an entry upgraded from v1.5 keeps its old IDs):
+Each zone is a device named **Cloudflare** followed by the zone name. For a zone `example.com` the entity IDs are as follows (an entry upgraded from v1.5 or v1.6 keeps its existing IDs):
 
 | Entity | State | Main attributes |
 |---|---|---|
-| `sensor.example_com_traffic_summary` | requests today (UTC) | `pageviews`, `requests`, `bytes`, `cached_bytes`, `cached_requests`, `encrypted_bytes`, `encrypted_requests`, `from`, `to` |
-| `sensor.example_com_skip_ips` | visitors seen by the Skip rule today | `skip_ips` |
-| `sensor.example_com_list_ips` | IPs in the block list | `current_list_ips` |
-| `sensor.example_com_high_risk_ips` | high-risk IPs found this update | `high_risk_ip_list`, `ips_to_check`, `blocked_ips`, `abuse_confidence_score_threshold`, `recheck_enabled`, `recheck_days`, `mode` |
-| `sensor.example_com_under_attack_mode` | `on` / `off` (`error` if it could not be read) | `security_level`, `current_request_count`, `last_request_count`, `delta`, `threshold`, `enabled`, `enabled_by_integration`, `mode`, `reason` |
+| `sensor.example_com_traffic_summary` | Requests today (UTC) | `pageviews`, `requests`, `bytes`, `cached_bytes`, `cached_requests`, `encrypted_bytes`, `encrypted_requests`, `from`, `to`, `zone_id` |
+| `sensor.example_com_skip_ips` | Visitors recorded by the Skip rule today | `skip_ips` |
+| `sensor.example_com_list_ips` | IP addresses in the IP list of the account | `current_list_ips` |
+| `sensor.example_com_high_risk_ips` | High-risk IP addresses found at this update | `high_risk_ip_list`, `ips_to_check`, `blocked_ips`, `abuse_confidence_score_threshold`, `recheck_enabled`, `recheck_days`, `mode` |
+| `sensor.example_com_under_attack_mode` | `on` or `off` (`error` if the level could not be read) | `security_level`, `current_request_count`, `last_request_count`, `delta`, `threshold`, `enabled`, `enabled_by_integration`, `mode`, `reason` |
 | `switch.example_com_under_attack` | `on` while the security level is `under_attack` | `security_level`, `enabled_by_integration` |
 
-Every sensor also has `next_update_in_seconds` and `next_update` (local time), and an `error` attribute when its part of the update failed. One failing part never blanks the other sensors.
+Every sensor also provides `next_update_in_seconds` and `next_update` (local time), and an `error` attribute when its part of the update failed. A failure in one part never affects the other sensors.
 
 ---
 
-## Services
+## Actions
 
-| Service | What it does |
+| Action | Description |
 |---|---|
-| `cloudflare_abuse_monitor.check_ip` | Looks one IP up on AbuseIPDB now and returns the result (call it with *response*). The score is cached like the automatic lookups. |
-| `cloudflare_abuse_monitor.block_ip` | Adds an IP to the block list. |
-| `cloudflare_abuse_monitor.unblock_ip` | Removes an IP from the block list. It is then never added back automatically, even in Active mode, until you block it again with `block_ip`. An IP that is not in the list gives an error and changes nothing. |
-| `cloudflare_abuse_monitor.refresh` | Updates every entity now. |
+| `cloudflare_abuse_monitor.check_ip` | Checks one IP address on AbuseIPDB immediately and returns the result (call it with a *response*). The score is cached in the same way as the automatic lookups. |
+| `cloudflare_abuse_monitor.block_ip` | Adds an IP address to the IP list of the zone's account. |
+| `cloudflare_abuse_monitor.unblock_ip` | Removes an IP address from the IP list of the zone's account. It is then never added again automatically, even in Active mode, until it is blocked again with `block_ip`. An IP address that is not in the list results in an error and changes nothing. |
+| `cloudflare_abuse_monitor.refresh` | Updates the entities immediately: of every zone, or of the zone specified. |
 
-`ip` accepts IPv4 and IPv6. Each service takes an optional `config_entry_id`, needed only when more than one zone is configured.
+`ip` accepts IPv4 and IPv6 addresses. Every action accepts the following optional fields to select the zone:
+
+- `zone`: the zone name, for example `example.com`;
+- `device_id`: the device of the zone;
+- `config_entry_id`: one configuration entry (one token).
+
+`block_ip` and `unblock_ip` require a zone only when the configured zones use different IP lists (that is, belong to different accounts). If all zones share one list, no zone needs to be specified.
 
 ```yaml
 action: cloudflare_abuse_monitor.check_ip
@@ -196,20 +233,28 @@ response_variable: result
 ```
 
 ```yaml
+action: cloudflare_abuse_monitor.block_ip
+data:
+  ip: 203.0.113.10
+  zone: example.org
+```
+
+```yaml
 action: cloudflare_abuse_monitor.unblock_ip
 data:
   ip: 2001:db8::10
+  zone: example.com
 ```
 
 ---
 
 ## Example dashboard
 
-This example uses [`button-card`](https://github.com/custom-cards/button-card). Replace the entity IDs with yours.
+This example uses [`button-card`](https://github.com/custom-cards/button-card). Replace the entity IDs with your own; repeat the stack for each zone.
 
 ```yaml
 type: vertical-stack
-title: Cloudflare Abuse Monitor
+title: Cloudflare example.com
 cards:
   - type: horizontal-stack
     cards:
@@ -227,7 +272,7 @@ cards:
     cards:
       - type: custom:button-card
         entity: sensor.example_com_list_ips
-        name: Blocked IPs
+        name: Blocked IP addresses
         icon: mdi:format-list-bulleted
         show_state: true
       - type: custom:button-card
@@ -248,7 +293,7 @@ cards:
     tap_action:
       action: toggle
       confirmation:
-        text: Change Cloudflare's Under Attack Mode?
+        text: Change Cloudflare Under Attack Mode for example.com?
     styles:
       card:
         - background-color: |
@@ -263,32 +308,33 @@ cards:
 
 ## Troubleshooting
 
-| Message in the setup form | What to do |
+| Message in the setup or options form | Resolution |
 |---|---|
-| *The token is missing: …* | Edit the token in Cloudflare (**My Profile > API Tokens > Edit**) and add each permission named, then submit again. Analytics Read, Zone Settings Edit, Zone WAF Edit and Account Filter Lists Edit are the usual ones, in case a row was removed when the token was made. |
-| *Cloudflare does not accept this API token* | The token was not pasted whole (no spaces or line breaks), was deleted, or is an account token for another account. |
-| *This API token is disabled or expired* | Re-enable it, or create a new one. |
-| *The token cannot read any zone* | Add **Zone > Zone > Read** and choose your zone under **Zone Resources**. |
-| *The token cannot read the zone this entry monitors* | (Reconfigure, reauthentication) Choose this entry's zone under **Zone Resources**. |
-| *Cloudflare would not create the IP list* | Create a list of type IP under **Manage Account > Configurations > Lists**, or delete an unused list, then try again. |
-| *Cloudflare would not add the firewall rules* | The plan's custom-rule limit is reached (5 on Free). Free a slot, or create the two rules by hand as shown above. |
+| *Zone ...: the token is missing the following permissions* | Edit the token in Cloudflare (**My Profile > API Tokens > Edit**), add each permission named, and submit the form again. The permissions most often missing are Analytics Read, Zone Settings Edit, Zone WAF Edit and Account Filter Lists Edit. Also verify that the zone is selected under **Zone Resources**. |
+| *Cloudflare did not accept this API token* | The token was not entered in full (without spaces or line breaks), has been deleted, or is an account token of another account. |
+| *This API token is disabled or has expired* | Re-enable the token, or create a new one. |
+| *The token has no access to any zone* | Add **Zone > Zone > Read** and select your zones under **Zone Resources**. |
+| *The token has no access to ..., which this entry monitors* | (Reconfiguration, reauthentication) Select that zone under **Zone Resources**, or remove the zone from the entry under **Configure** first. |
+| *Every zone that this token can access is already configured* | All zones of this token are already monitored. Add new zones to the token under **Zone Resources**, or use **Configure** on the existing entry. |
+| *Cloudflare did not allow the IP list block_ips to be created* | Create a list of type IP under **Manage Account > Configurations > Lists**, or delete an unused list, and then try again. |
+| *Cloudflare did not allow the firewall rules to be added* | The custom-rule limit of the plan is reached (five on the Free plan). Free a slot, or create the two rules manually as shown above. |
 | *AbuseIPDB rejected this API key* | Copy the key again from AbuseIPDB **Account > API**. |
-| *Could not reach Cloudflare or AbuseIPDB* | A network problem or an outage; try again. The log has the status code. |
+| *Cloudflare or AbuseIPDB could not be reached* | A network problem or an outage occurred; please try again. The log contains the status code. |
 
 After setup:
 
-- **A sensor shows `unknown` with an `error` attribute**: that part of the update failed (an outage, a plan limit). The other sensors keep working, and the next update tries again.
-- **A Reauthenticate notice**: Cloudflare rejected the token. It was deleted, expired, or lost a permission. Paste a new one.
-- **Skip IPs stays at 0**: check that the Skip rule exists, is enabled, is the last custom rule, and has **Log matching requests** on.
-- **High-risk IPs are listed but not blocked**: check that the Block rule is enabled and comes before any rule that skips the remaining custom rules.
-- **Diagnostics**: the integration's three-dots menu > **Download diagnostics** gives a file without the token, keys, zone, account, list identifiers or visitor IPs, safe to attach to an issue.
+- **A sensor shows `unknown` with an `error` attribute**: that part of the update failed (for example an outage or a plan limit). The other sensors continue to work, and the next update tries again.
+- **A Reauthenticate notification**: Cloudflare rejected the token. It has been deleted, has expired, or has lost a permission. Enter a new token.
+- **Skip IPs remains at 0**: verify that the Skip rule exists in that zone, is enabled, is the last custom rule, and has **Log matching requests** enabled.
+- **High-risk IP addresses are listed but not blocked**: verify that the Block rule of the zone is enabled and is placed before any rule that skips the remaining custom rules.
+- **Diagnostics**: the three-dots menu of the integration > **Download diagnostics** provides a file without the token, keys, zone names, account and list identifiers or visitor IP addresses. Zones are numbered rather than named. The file can safely be attached to an issue.
 
 ---
 
 ## Disclaimer
 
-You are responsible for how you use this integration. Blocking IP addresses can block real visitors; start in Monitor mode and check the high-risk list before switching to Active. The author is not responsible for misuse or unintended blocking.
+You are responsible for the use of this integration. Blocking IP addresses can block legitimate visitors; it is recommended to start in Monitor mode and review the high-risk list before switching to Active mode. The author accepts no responsibility for misuse or unintended blocking.
 
 ## Contributing
 
-Bug fixes, features and suggestions are welcome: submit a pull request or [open an issue](https://github.com/niruse/cloudflare_abuse_monitor/issues).
+Bug fixes, features and suggestions are welcome. Submit a pull request or [open an issue](https://github.com/niruse/cloudflare_abuse_monitor/issues).

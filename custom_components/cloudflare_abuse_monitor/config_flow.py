@@ -1,8 +1,9 @@
 """Setup with one scoped Cloudflare API token, then everything else is automatic.
 
-The token is checked, the zone and account are read from it, every permission the
-integration needs is probed without changing anything, and the IP list and the two
-firewall rules are created when they are missing (never twice).
+The token is checked and every zone it can read is listed with a checkbox. For each ticked
+zone every permission the integration needs is probed without changing anything, and the
+IP list (one per Cloudflare account, shared by its zones) and the two firewall rules are
+created when they are missing (never twice). The options add and remove zones the same way.
 """
 from __future__ import annotations
 
@@ -14,6 +15,10 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.helpers.selector import (
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
     TextSelector,
     TextSelectorConfig,
     TextSelectorType,
@@ -25,6 +30,7 @@ from .const import (
     CONF_API_TOKEN,
     CONF_RECHECK_ENABLED,
     CONF_UID_PREFIX,
+    CONF_ZONES,
     DEFAULT_ABUSE_CONFIDENCE_SCORE,
     DEFAULT_LIST_NAME,
     DEFAULT_RECHECK_DAYS,
@@ -34,7 +40,10 @@ from .const import (
     LEGACY_KEYS,
     MODE_ACTIVE,
     MODE_MONITOR,
+    ZONE_KEYS,
+    zone_records,
 )
+from .coordinator import owned_level_store
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -56,24 +65,81 @@ class SetupError(Exception):
 
 
 def _placeholders(**extra: str) -> dict[str, str]:
-    return {"token_url": api.CREATE_TOKEN_URL, "permissions": PERMISSION_LIST, "missing": "", **extra}
+    return {
+        "token_url": api.CREATE_TOKEN_URL,
+        "permissions": PERMISSION_LIST,
+        "missing": "",
+        "zone": "",
+        **extra,
+    }
 
 
-class CloudflareAbuseMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for Cloudflare Abuse Monitor."""
+def _zone_selector(zones: list[dict]) -> SelectSelector:
+    """A checkbox per zone, like the camera list of other integrations."""
+    accounts = {(zone.get("account") or {}).get("id") for zone in zones}
+    options = []
+    for zone in sorted(zones, key=lambda z: z["name"]):
+        label = zone["name"]
+        account_name = (zone.get("account") or {}).get("name")
+        if len(accounts) > 1 and account_name:
+            label = f"{label} ({account_name})"
+        options.append(SelectOptionDict(value=zone["id"], label=label))
+    return SelectSelector(SelectSelectorConfig(options=options, multiple=True, mode=SelectSelectorMode.LIST))
 
-    VERSION = 1
-    MINOR_VERSION = 2
 
-    def __init__(self) -> None:
+def _zone_from_record(record: dict) -> dict:
+    """A stored zone in the shape Cloudflare's /zones returns."""
+    return {"id": record["zone_id"], "name": record["zone_name"], "account": {"id": record["account_id"]}}
+
+
+def _new_record(zone: dict, chosen: dict[str, str]) -> dict:
+    return {
+        "zone_id": zone["id"],
+        "zone_name": zone["name"],
+        "account_id": zone["account"]["id"],
+        "list_name": chosen["list_name"],
+        "list_id": chosen["list_id"],
+        CONF_UID_PREFIX: zone["id"],
+    }
+
+
+def _title(records: list[dict]) -> str:
+    if len(records) == 1:
+        return f"Cloudflare: {records[0]['zone_name']}"
+    return f"Cloudflare: {len(records)} zones"
+
+
+def _zones_in_other_entries(flow, own_entry_id: str | None) -> set[str]:
+    taken = set()
+    for entry in flow.hass.config_entries.async_entries(DOMAIN):
+        if entry.entry_id == own_entry_id:
+            continue
+        taken |= {zone["zone_id"] for zone in zone_records(entry.data)}
+    return taken
+
+
+class ZoneSetupMixin:
+    """The automatic per-zone setup, shared by the config flow and the options flow.
+
+    Ticked zones go into a queue; each is prepared in turn (permission probes, the account's
+    IP list, the rules). An error re-shows the form it came from; a list Cloudflare would not
+    create detours through list_select and then the queue goes on.
+    """
+
+    def _init_zone_setup(self) -> None:
         self._token: str | None = None
-        self._abuse_key: str | None = None
         self._token_checked_by_user_endpoint = True
+        self._verified_accounts: set[str] = set()
         self._zones: list[dict] = []
-        self._zone: dict | None = None
         self._lists: list[dict] = []
-
-    # --- helpers ---------------------------------------------------------------------
+        # account id -> {"list_name", "list_id"}: the list its zones block with.
+        self._account_lists: dict[str, dict[str, str]] = {}
+        # zone id -> (list name, list id) to look for before creating a new list.
+        self._wanted_lists: dict[str, tuple[str, str | None]] = {}
+        self._queue: list[dict] = []
+        self._prepared: dict[str, dict[str, str]] = {}
+        self._zone: dict | None = None
+        self._error_step: tuple[str, Any] | None = None
 
     async def _job(self, func, *args):
         return await self.hass.async_add_executor_job(func, *args)
@@ -100,7 +166,7 @@ class CloudflareAbuseMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
     async def _async_check_account_token(self, headers, account_id: str) -> None:
         """Step 3: a token /user/tokens/verify did not know must be an account token."""
-        if self._token_checked_by_user_endpoint:
+        if self._token_checked_by_user_endpoint or account_id in self._verified_accounts:
             return
         try:
             status = await self._job(api.verify_account_token, account_id, headers)
@@ -108,11 +174,17 @@ class CloudflareAbuseMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
             raise SetupError("invalid_token") from None
         if status != "active":
             raise SetupError("token_inactive")
+        self._verified_accounts.add(account_id)
 
     async def _async_prepare_zone(
         self, headers, zone_id: str, account_id: str, list_name: str, list_id: str | None
     ) -> dict[str, str]:
-        """Steps 4-7. Returns {"list_name", "list_id"}; raises SetupError on any problem."""
+        """Steps 4-7. Returns {"list_name", "list_id"}; raises SetupError on any problem.
+
+        The list is per account: once one zone of an account has it, the next zones of that
+        account use it as is (no second list, no second list probe).
+        """
+        known = self._account_lists.get(account_id)
         missing: list[str] = []
 
         # 4. Analytics Read: one read-only row of each dataset.
@@ -129,11 +201,12 @@ class CloudflareAbuseMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
             missing.append(PERMISSION["zone_settings"])
 
         # 6a. Filter Lists: read first, write later.
-        try:
-            self._lists = await self._job(api.fetch_ip_lists, account_id, headers)
-        except api.CloudflareAuthError:
-            self._lists = []
-            missing.append(PERMISSION["account_filter_lists"])
+        if known is None:
+            try:
+                self._lists = await self._job(api.fetch_ip_lists, account_id, headers)
+            except api.CloudflareAuthError:
+                self._lists = []
+                missing.append(PERMISSION["account_filter_lists"])
 
         # 7a. WAF custom rules: read first. A 404 (no custom rules yet) comes back as None.
         try:
@@ -146,27 +219,34 @@ class CloudflareAbuseMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
             raise SetupError("missing_permissions", missing=", ".join(missing))
 
         # 6b. The list: the stored one, else one with the expected name, else a new one.
-        existing = next((item for item in self._lists if item.get("id") == list_id), None) or next(
-            (item for item in self._lists if item.get("name") == list_name), None
-        )
-        try:
-            if existing:
-                await self._job(
-                    api.update_list_description, account_id, existing["id"], existing.get("description") or "", headers
-                )
-                chosen = {"list_name": existing["name"], "list_id": existing["id"]}
-            else:
-                try:
-                    created = await self._job(api.create_ip_list, account_id, list_name, headers)
-                except api.CloudflareAuthError:
-                    raise
-                except api.CloudflareApiError as err:
-                    # Plan limit on lists: offer the lists that exist instead of failing silently.
-                    _LOGGER.warning("Could not create the IP list: %s", err)
-                    raise SetupError("list_create_failed") from None
-                chosen = {"list_name": created.get("name", list_name), "list_id": created["id"]}
-        except api.CloudflareAuthError:
-            raise SetupError("missing_permissions", missing=PERMISSION["account_filter_lists"]) from None
+        if known is not None:
+            chosen = dict(known)
+        else:
+            existing = next((item for item in self._lists if item.get("id") == list_id), None) or next(
+                (item for item in self._lists if item.get("name") == list_name), None
+            )
+            try:
+                if existing:
+                    await self._job(
+                        api.update_list_description, account_id, existing["id"],
+                        existing.get("description") or "", headers,
+                    )
+                    chosen = {"list_name": existing["name"], "list_id": existing["id"]}
+                else:
+                    try:
+                        created = await self._job(api.create_ip_list, account_id, list_name, headers)
+                    except api.CloudflareAuthError:
+                        raise
+                    except api.CloudflareApiError as err:
+                        # Plan limit on lists: offer the lists that exist instead of failing silently.
+                        _LOGGER.warning("Could not create the IP list: %s", err)
+                        raise SetupError("list_create_failed") from None
+                    chosen = {"list_name": created.get("name", list_name), "list_id": created["id"]}
+                    # Listed now, so a retry after a later error finds it instead of making another.
+                    self._lists = [*self._lists, {"id": chosen["list_id"], "name": chosen["list_name"]}]
+            except api.CloudflareAuthError:
+                raise SetupError("missing_permissions", missing=PERMISSION["account_filter_lists"]) from None
+            self._account_lists[account_id] = chosen
 
         # 7b. The Block and Skip rules, only the ones that are missing.
         await self._async_ensure_rules(headers, zone_id, ruleset, chosen["list_name"])
@@ -191,13 +271,6 @@ class CloudflareAbuseMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
             _LOGGER.warning("Could not create the firewall rules: %s", err)
             raise SetupError("rule_create_failed") from None
 
-    async def _async_check_abuseipdb(self, key: str) -> None:
-        result = await self._job(api.validate_abuseipdb_key, key)
-        if result == "invalid":
-            raise SetupError("invalid_abuseipdb_key")
-        if result == "rate_limited":
-            _LOGGER.warning("AbuseIPDB key accepted, but today's lookup quota is already used up")
-
     async def _async_run(self, coro_factory, step_id: str, schema, **extra_placeholders):
         """Run validation; on a SetupError re-show step_id with the error."""
         try:
@@ -207,7 +280,7 @@ class CloudflareAbuseMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                 step_id=step_id,
                 data_schema=schema,
                 errors={"base": err.key},
-                description_placeholders=_placeholders(**extra_placeholders, **err.placeholders),
+                description_placeholders=_placeholders(**{**extra_placeholders, **err.placeholders}),
             )
         except (api.CloudflareApiError, api.AbuseIPDBError, OSError) as err:
             # Never the token: these messages carry only status codes and Cloudflare's own text.
@@ -218,6 +291,72 @@ class CloudflareAbuseMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                 errors={"base": "connection_error"},
                 description_placeholders=_placeholders(**extra_placeholders),
             )
+
+    # --- the queue of ticked zones ---------------------------------------------------------
+
+    def _start_queue(self, zones: list[dict], step_id: str, schema) -> None:
+        self._queue = list(zones)
+        self._prepared = {}
+        self._error_step = (step_id, schema)
+
+    async def _async_process_queue(self, first_step: tuple[str, Any] | None = None):
+        headers = api.get_headers(self._token)
+        step = first_step or self._error_step
+        while self._queue:
+            zone = self._queue[0]
+            account_id = zone["account"]["id"]
+            list_name, list_id = self._wanted_lists.get(zone["id"], (DEFAULT_LIST_NAME, None))
+
+            async def prepare(zone=zone, account_id=account_id, list_name=list_name, list_id=list_id):
+                await self._async_check_account_token(headers, account_id)
+                return await self._async_prepare_zone(headers, zone["id"], account_id, list_name, list_id)
+
+            chosen, form = await self._async_run(prepare, step[0], step[1], zone=zone["name"])
+            if form:
+                if form.get("errors") == {"base": "list_create_failed"} and self._lists:
+                    self._zone = zone
+                    return await self.async_step_list_select()
+                return form
+            self._queue.pop(0)
+            self._prepared[zone["id"]] = chosen
+            step = self._error_step
+        return await self._async_zones_ready()
+
+    async def async_step_list_select(self, user_input=None):
+        """The list could not be created (plan limit): use one of the existing IP lists."""
+        names = {item["name"]: item["id"] for item in self._lists}
+        schema = vol.Schema({vol.Required("list_name"): vol.In(list(names))})
+        placeholders = {"zone": self._zone["name"]}
+        if user_input is None:
+            return self.async_show_form(
+                step_id="list_select", data_schema=schema, description_placeholders=placeholders
+            )
+        name = user_input["list_name"]
+        self._wanted_lists[self._zone["id"]] = (name, names[name])
+        return await self._async_process_queue(("list_select", schema))
+
+    async def _async_zones_ready(self):
+        raise NotImplementedError
+
+
+class CloudflareAbuseMonitorConfigFlow(ZoneSetupMixin, config_entries.ConfigFlow, domain=DOMAIN):
+    """Handle a config flow for Cloudflare Abuse Monitor."""
+
+    VERSION = 1
+    MINOR_VERSION = 3
+
+    def __init__(self) -> None:
+        self._init_zone_setup()
+        self._abuse_key: str | None = None
+        self._available: list[dict] = []
+        self._reauth_entry = None
+
+    async def _async_check_abuseipdb(self, key: str) -> None:
+        result = await self._job(api.validate_abuseipdb_key, key)
+        if result == "invalid":
+            raise SetupError("invalid_abuseipdb_key")
+        if result == "rate_limited":
+            _LOGGER.warning("AbuseIPDB key accepted, but today's lookup quota is already used up")
 
     # --- user setup ------------------------------------------------------------------
 
@@ -254,75 +393,53 @@ class CloudflareAbuseMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         _, form = await self._async_run(check, "user", self._user_schema())
         if form:
             return form
-        if len(self._zones) == 1:
-            return await self._async_use_zone(self._zones[0])
-        return await self.async_step_zone_select()
 
-    async def async_step_zone_select(self, user_input=None):
-        """More than one zone: ask which one."""
-        options = {zone["id"]: zone["name"] for zone in self._zones}
-        schema = vol.Schema({vol.Required("zone_id"): vol.In(options)})
+        # A zone another entry already monitors is not offered again.
+        taken = _zones_in_other_entries(self, None)
+        self._available = [zone for zone in self._zones if zone["id"] not in taken]
+        if not self._available:
+            return self.async_abort(reason="already_configured")
+        if len(self._available) == 1:
+            self._start_queue(self._available, "user", self._user_schema())
+            return await self._async_process_queue()
+        return await self.async_step_zones()
+
+    def _zones_schema(self, selected: list[str] | None = None):
+        default = selected if selected is not None else [zone["id"] for zone in self._available]
+        return vol.Schema({vol.Required(CONF_ZONES, default=default): _zone_selector(self._available)})
+
+    async def async_step_zones(self, user_input=None):
+        """More than one zone: a checkbox per zone, all ticked to start with."""
+        placeholders = _placeholders(count=str(len(self._available)))
         if user_input is None:
-            return self.async_show_form(step_id="zone_select", data_schema=schema)
-        zone = next(z for z in self._zones if z["id"] == user_input["zone_id"])
-        return await self._async_use_zone(zone)
-
-    async def _async_use_zone(self, zone: dict):
-        self._zone = zone
-        await self.async_set_unique_id(zone["id"])
-        self._abort_if_unique_id_configured()
-        return await self._async_finish_user()
-
-    async def _async_finish_user(self):
-        zone = self._zone
-        headers = api.get_headers(self._token)
-        account_id = zone["account"]["id"]
-
-        async def prepare():
-            await self._async_check_account_token(headers, account_id)
-            return await self._async_prepare_zone(headers, zone["id"], account_id, DEFAULT_LIST_NAME, None)
-
-        chosen, form = await self._async_run(prepare, "user", self._user_schema())
-        if form:
-            if form.get("errors") == {"base": "list_create_failed"} and self._lists:
-                return await self.async_step_list_select()
-            return form
-        return self._create(chosen)
-
-    async def async_step_list_select(self, user_input=None):
-        """The list could not be created (plan limit): use one of the existing IP lists."""
-        names = {item["name"]: item["id"] for item in self._lists}
-        schema = vol.Schema({vol.Required("list_name"): vol.In(list(names))})
-        if user_input is None:
-            return self.async_show_form(step_id="list_select", data_schema=schema)
-
-        zone = self._zone
-        headers = api.get_headers(self._token)
-        list_name = user_input["list_name"]
-
-        async def prepare():
-            return await self._async_prepare_zone(
-                headers, zone["id"], zone["account"]["id"], list_name, names[list_name]
+            return self.async_show_form(
+                step_id="zones", data_schema=self._zones_schema(), description_placeholders=placeholders
             )
+        selected = list(user_input.get(CONF_ZONES) or [])
+        schema = self._zones_schema(selected)
+        if not selected:
+            return self.async_show_form(
+                step_id="zones", data_schema=schema, errors={"base": "no_zones"},
+                description_placeholders=placeholders,
+            )
+        self._start_queue([zone for zone in self._available if zone["id"] in selected], "zones", schema)
+        return await self._async_process_queue()
 
-        chosen, form = await self._async_run(prepare, "list_select", schema)
-        if form:
-            return form
-        return self._create(chosen)
-
-    def _create(self, chosen: dict[str, str]):
-        zone = self._zone
+    async def _async_zones_ready(self):
+        if self._reauth_entry is not None:
+            return self._async_finish_new_token()
+        records = [_new_record(zone, self._prepared[zone["id"]]) for zone in self._available
+                   if zone["id"] in self._prepared]
+        if len(records) == 1:
+            # Like v1.6: an entry with one zone is found by that zone's id.
+            await self.async_set_unique_id(records[0]["zone_id"])
+            self._abort_if_unique_id_configured()
         return self.async_create_entry(
-            title=f"Cloudflare: {zone['name']}",
+            title=_title(records),
             data={
                 CONF_API_TOKEN: self._token,
                 CONF_ABUSEIPDB_TOKEN: self._abuse_key,
-                CONF_UID_PREFIX: zone["id"],
-                "zone_id": zone["id"],
-                "zone_name": zone["name"],
-                "account_id": zone["account"]["id"],
-                "list_name": chosen["list_name"],
-                "list_id": chosen["list_id"],
+                CONF_ZONES: records,
                 "abuse_confidence_score": DEFAULT_ABUSE_CONFIDENCE_SCORE,
                 "recheck_days": DEFAULT_RECHECK_DAYS,
                 "scan_interval_minutes": DEFAULT_SCAN_INTERVAL_MINUTES,
@@ -336,7 +453,8 @@ class CloudflareAbuseMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         return vol.Schema({vol.Required(CONF_API_TOKEN): SECRET})
 
     async def _async_new_token(self, entry, user_input, step_id: str):
-        placeholders = {"zone_name": entry.data.get("zone_name", "")}
+        records = zone_records(entry.data)
+        placeholders = {"zone_name": ", ".join(record["zone_name"] for record in records)}
         if user_input is None:
             return self.async_show_form(
                 step_id=step_id, data_schema=self._token_schema(), description_placeholders=_placeholders(**placeholders)
@@ -349,27 +467,39 @@ class CloudflareAbuseMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                 description_placeholders=_placeholders(**placeholders),
             )
         headers = api.get_headers(token)
-        data = entry.data
-        zone_id, account_id = data["zone_id"], data["account_id"]
 
         async def check():
             await self._async_check_token(headers)
-            if not any(zone.get("id") == zone_id for zone in self._zones):
-                raise SetupError("wrong_zone")
-            await self._async_check_account_token(headers, account_id)
-            return await self._async_prepare_zone(
-                headers, zone_id, account_id, data.get("list_name") or DEFAULT_LIST_NAME, data.get("list_id")
-            )
+            visible = {zone.get("id") for zone in self._zones}
+            for record in records:
+                if record["zone_id"] not in visible:
+                    raise SetupError("wrong_zone", zone=record["zone_name"])
 
-        chosen, form = await self._async_run(check, step_id, self._token_schema(), **placeholders)
+        _, form = await self._async_run(check, step_id, self._token_schema(), **placeholders)
         if form:
             return form
 
-        new_data = {key: value for key, value in data.items() if key not in LEGACY_KEYS}
-        new_data.update(chosen)
-        new_data[CONF_API_TOKEN] = token
-        # Entities keep the unique ids they were registered with (built from the old email).
-        new_data.setdefault(CONF_UID_PREFIX, data.get("email") or zone_id)
+        self._token = token
+        self._reauth_entry = entry
+        # Every zone keeps the list it has.
+        self._wanted_lists = {record["zone_id"]: (record.get("list_name") or DEFAULT_LIST_NAME,
+                                                  record.get("list_id")) for record in records}
+        self._start_queue([_zone_from_record(record) for record in records], step_id, self._token_schema())
+        return await self._async_process_queue()
+
+    def _async_finish_new_token(self):
+        entry = self._reauth_entry
+        records = []
+        for record in zone_records(entry.data):
+            # Unique-id prefix and storage stay; only the list can change.
+            records.append({**record, **self._prepared[record["zone_id"]]})
+        # An entry not migrated yet (a v1.5 Global API Key entry) also gets the v1.7 shape here.
+        new_data = {
+            key: value for key, value in entry.data.items()
+            if key not in LEGACY_KEYS and key not in ZONE_KEYS and key != CONF_UID_PREFIX
+        }
+        new_data[CONF_ZONES] = records
+        new_data[CONF_API_TOKEN] = self._token
         return self.async_update_reload_and_abort(entry, data=new_data)
 
     async def async_step_reconfigure(self, user_input=None):
@@ -389,21 +519,48 @@ class CloudflareAbuseMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         return CloudflareAbuseMonitorOptionsFlowHandler()
 
 
-class CloudflareAbuseMonitorOptionsFlowHandler(config_entries.OptionsFlow):
-    """Handle an options flow for Cloudflare Abuse Monitor."""
+class CloudflareAbuseMonitorOptionsFlowHandler(ZoneSetupMixin, config_entries.OptionsFlow):
+    """The zone checkboxes plus the options; they apply to every zone of the entry."""
 
-    async def async_step_init(self, user_input=None):
-        """Manage the options."""
-        if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+    def __init__(self) -> None:
+        self._init_zone_setup()
+        self._choices: list[dict] | None = None
+        self._options: dict[str, Any] = {}
+        self._selected: list[str] = []
+        self._lookup_error: str | None = None
 
-        options = self.config_entry.options
-        data = self.config_entry.data
+    async def _async_zone_choices(self) -> list[dict]:
+        """The zones the token sees now (minus other entries' zones) plus the configured ones."""
+        if self._choices is not None:
+            return self._choices
+        entry = self.config_entry
+        self._token = entry.data.get(CONF_API_TOKEN)
+        configured = [_zone_from_record(record) for record in entry.data.get(CONF_ZONES) or []]
+        live: list[dict] = []
+        if self._token:
+            try:
+                await self._async_check_token(api.get_headers(self._token))
+                live = self._zones
+            except SetupError as err:
+                self._lookup_error = "zones_unavailable"
+                _LOGGER.warning("Could not list the token's zones: %s", err.key)
+            except (api.CloudflareApiError, OSError) as err:
+                self._lookup_error = "zones_unavailable"
+                _LOGGER.warning("Could not list the token's zones: %s", err)
+        taken = _zones_in_other_entries(self, entry.entry_id)
+        by_id = {zone["id"]: zone for zone in configured}
+        for zone in live:
+            if zone["id"] not in taken:
+                by_id[zone["id"]] = zone  # the live copy has the account name for the label
+        self._choices = list(by_id.values())
+        return self._choices
 
+    def _schema(self, values: dict) -> vol.Schema:
         def current(key, default):
-            return options.get(key, data.get(key, default))
+            return values.get(key, default)
 
-        schema = vol.Schema({
+        return vol.Schema({
+            vol.Required(CONF_ZONES, default=current(CONF_ZONES, [])): _zone_selector(self._choices or []),
             vol.Required("abuse_confidence_score", default=current("abuse_confidence_score", DEFAULT_ABUSE_CONFIDENCE_SCORE)): SCORE,
             vol.Required("mode", default=current("mode", MODE_MONITOR)): vol.In([MODE_ACTIVE, MODE_MONITOR]),
             vol.Required(CONF_RECHECK_ENABLED, default=current(CONF_RECHECK_ENABLED, True)): bool,
@@ -413,4 +570,58 @@ class CloudflareAbuseMonitorOptionsFlowHandler(config_entries.OptionsFlow):
             vol.Required("scan_interval_minutes", default=current("scan_interval_minutes", DEFAULT_SCAN_INTERVAL_MINUTES)): POSITIVE_INT,
         })
 
-        return self.async_show_form(step_id="init", data_schema=schema)
+    async def async_step_init(self, user_input=None):
+        """Manage the zones and the options."""
+        entry = self.config_entry
+        await self._async_zone_choices()
+        records = list(entry.data.get(CONF_ZONES) or [])
+        configured_ids = [record["zone_id"] for record in records]
+
+        if user_input is None:
+            values = {**entry.data, **entry.options, CONF_ZONES: configured_ids}
+            errors = {"base": self._lookup_error} if self._lookup_error else None
+            return self.async_show_form(
+                step_id="init", data_schema=self._schema(values), errors=errors,
+                description_placeholders=_placeholders(),
+            )
+
+        selected = list(user_input.get(CONF_ZONES) or [])
+        schema = self._schema(user_input)
+        if not selected:
+            return self.async_show_form(
+                step_id="init", data_schema=schema, errors={"base": "no_zones"},
+                description_placeholders=_placeholders(),
+            )
+        self._selected = selected
+        self._options = {key: value for key, value in user_input.items() if key != CONF_ZONES}
+
+        # Zones that stay keep their list; a new zone of a known account uses that account's list.
+        for record in records:
+            if record["zone_id"] in selected:
+                self._account_lists.setdefault(record["account_id"], {
+                    "list_name": record["list_name"], "list_id": record["list_id"],
+                })
+        added = [zone for zone in self._choices if zone["id"] in selected and zone["id"] not in configured_ids]
+        self._start_queue(added, "init", schema)
+        return await self._async_process_queue()
+
+    async def _async_zones_ready(self):
+        entry = self.config_entry
+        records = list(entry.data.get(CONF_ZONES) or [])
+        kept = [record for record in records if record["zone_id"] in self._selected]
+        added = [_new_record(zone, self._prepared[zone["id"]]) for zone in self._choices
+                 if zone["id"] in self._prepared]
+        for record in records:
+            if record["zone_id"] not in self._selected:
+                # Its device and entities go on reload; its rules and list stay in Cloudflare.
+                await owned_level_store(self.hass, entry.entry_id, record).async_remove()
+        new_records = kept + added
+        # A title the user typed stays; the automatic one follows the zones.
+        title = _title(new_records) if records and entry.title == _title(records) else entry.title
+        self.hass.config_entries.async_update_entry(
+            entry,
+            title=title,
+            data={**entry.data, CONF_ZONES: new_records},
+            options=self._options,
+        )
+        return self.async_create_entry(title="", data=self._options)

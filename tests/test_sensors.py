@@ -2,7 +2,7 @@ import json
 
 from homeassistant.helpers import entity_registry as er
 
-from .conftest import DOMAIN, traffic
+from .conftest import DOMAIN, coord, traffic
 
 UNIQUE_IDS = {
     "traffic": "owner@example.com_example.com_traffic_summary",
@@ -22,7 +22,7 @@ def state(hass, key):
 async def setup(hass, entry):
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    return entry.runtime_data
+    return coord(entry)
 
 
 async def test_all_sensors_from_one_cycle(hass, config_dir, cf, make_entry, caplog):
@@ -137,7 +137,7 @@ async def test_under_attack_disabled_does_not_touch_security_level(hass, config_
     coordinator = await setup(hass, entry)
     await coordinator.async_refresh()
     cf.set_level.assert_not_called()
-    assert state(hass, "under_attack").attributes["reason"] == "Under attack mode is disabled"
+    assert state(hass, "under_attack").attributes["reason"] == "Automatic Under Attack Mode is disabled"
     await hass.config_entries.async_unload(entry.entry_id)
 
 

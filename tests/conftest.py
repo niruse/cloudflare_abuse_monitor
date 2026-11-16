@@ -61,6 +61,22 @@ def auto_enable_custom_integrations(enable_custom_integrations):
     yield
 
 
+@pytest.fixture(autouse=True)
+def no_zone_stagger():
+    """Zones still take turns, without the real one-second gap (tested on its own)."""
+    with patch("custom_components.cloudflare_abuse_monitor.coordinator.ZONE_STAGGER_SECONDS", 0):
+        yield
+
+
+def coord(entry, zone_id=None):
+    """The coordinator of one zone (the only one when zone_id is left out)."""
+    coordinators = entry.runtime_data.coordinators
+    if zone_id is None:
+        assert len(coordinators) == 1
+        return next(iter(coordinators.values()))
+    return coordinators[zone_id]
+
+
 @pytest.fixture
 def config_dir(hass, tmp_path):
     hass.config.config_dir = str(tmp_path)

@@ -5,6 +5,14 @@ check_ip:
       example: "203.0.113.10"
       selector:
         text:
+    zone:
+      example: "example.com"
+      selector:
+        text:
+    device_id:
+      selector:
+        device:
+          integration: cloudflare_abuse_monitor
     config_entry_id:
       selector:
         config_entry:
@@ -16,6 +24,14 @@ block_ip:
       example: "203.0.113.10"
       selector:
         text:
+    zone:
+      example: "example.com"
+      selector:
+        text:
+    device_id:
+      selector:
+        device:
+          integration: cloudflare_abuse_monitor
     config_entry_id:
       selector:
         config_entry:
@@ -27,12 +43,28 @@ unblock_ip:
       example: "203.0.113.10"
       selector:
         text:
+    zone:
+      example: "example.com"
+      selector:
+        text:
+    device_id:
+      selector:
+        device:
+          integration: cloudflare_abuse_monitor
     config_entry_id:
       selector:
         config_entry:
           integration: cloudflare_abuse_monitor
 refresh:
   fields:
+    zone:
+      example: "example.com"
+      selector:
+        text:
+    device_id:
+      selector:
+        device:
+          integration: cloudflare_abuse_monitor
     config_entry_id:
       selector:
         config_entry:

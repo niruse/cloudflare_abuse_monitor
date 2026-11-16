@@ -36,25 +36,31 @@ def redact_text(text: str | None, entry: ConfigEntry) -> str | None:
     """Remove the entry's identifiers and anything id-, IP- or email-shaped from an error string."""
     if not text:
         return text
-    for key in TO_REDACT:
-        value = entry.data.get(key)
-        if isinstance(value, str) and len(value) >= 4:
-            text = text.replace(value, REDACTED)
+    for source in (entry.data, *(entry.data.get("zones") or [])):
+        for key in TO_REDACT:
+            value = source.get(key)
+            if isinstance(value, str) and len(value) >= 4:
+                text = text.replace(value, REDACTED)
     for pattern in _PATTERNS:
         text = pattern.sub(REDACTED, text)
     return text
 
 
 async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
-    coordinator = getattr(entry, "runtime_data", None)
-    sections = {}
-    if coordinator is not None and coordinator.data:
-        # Values and errors only: the attributes hold visitor IP addresses.
-        sections = {
-            name: {"value": section.get("value"), "error": redact_text(section.get("error"), entry)}
-            for name, section in coordinator.data.items()
-            if isinstance(section, dict)
-        }
+    runtime = getattr(entry, "runtime_data", None)
+    coordinators = list(getattr(runtime, "coordinators", {}).values())
+    zones = []
+    # Zones are numbered, never named: the name and id are redacted like everything else.
+    for coordinator in coordinators:
+        sections = {}
+        if coordinator.data:
+            # Values and errors only: the attributes hold visitor IP addresses.
+            sections = {
+                name: {"value": section.get("value"), "error": redact_text(section.get("error"), entry)}
+                for name, section in coordinator.data.items()
+                if isinstance(section, dict)
+            }
+        zones.append({"last_update_success": coordinator.last_update_success, "sections": sections})
     return {
         "entry": {
             "title": REDACTED,
@@ -63,5 +69,7 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
             "data": async_redact_data(dict(entry.data), TO_REDACT),
             "options": async_redact_data(dict(entry.options), TO_REDACT),
         },
-        "sections": sections,
+        "zones": zones,
+        # One zone (the common case): its sections at the top, as before v1.7.
+        "sections": zones[0]["sections"] if len(zones) == 1 else {},
     }
