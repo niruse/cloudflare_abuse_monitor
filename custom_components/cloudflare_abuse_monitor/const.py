@@ -12,3 +12,19 @@ MODE_ACTIVE = "Active"
 MODE_MONITOR = "Monitor"
 
 UNDER_ATTACK_LEVEL = "under_attack"
+
+# Config entry data keys.
+CONF_API_TOKEN = "api_token"
+CONF_ABUSEIPDB_TOKEN = "abuseipdb_token"
+CONF_UID_PREFIX = "uid_prefix"
+CONF_RECHECK_ENABLED = "recheck_enabled"
+# Left by v1.5 and earlier (Global API Key); removed once a token replaces them.
+LEGACY_KEYS = ("email", "global_token")
+
+DEFAULT_LIST_NAME = "block_ips"
+FALLBACK_SECURITY_LEVEL = "high"
+
+SERVICE_CHECK_IP = "check_ip"
+SERVICE_BLOCK_IP = "block_ip"
+SERVICE_UNBLOCK_IP = "unblock_ip"
+SERVICE_REFRESH = "refresh"

@@ -1,0 +1,39 @@
+check_ip:
+  fields:
+    ip:
+      required: true
+      example: "203.0.113.10"
+      selector:
+        text:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: cloudflare_abuse_monitor
+block_ip:
+  fields:
+    ip:
+      required: true
+      example: "203.0.113.10"
+      selector:
+        text:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: cloudflare_abuse_monitor
+unblock_ip:
+  fields:
+    ip:
+      required: true
+      example: "203.0.113.10"
+      selector:
+        text:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: cloudflare_abuse_monitor
+refresh:
+  fields:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: cloudflare_abuse_monitor

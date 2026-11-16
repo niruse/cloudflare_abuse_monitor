@@ -3,14 +3,10 @@
     "step": {
       "user": {
         "title": "Cloudflare Abuse Monitor",
-        "description": "Connect your Cloudflare account and AbuseIPDB.",
+        "description": "1. Open [Create a Cloudflare API token]({token_url}). The token needs exactly these permissions:\n{permissions}\nCheck that all five rows are there; Cloudflare may leave one out, so add any missing row with **+ Add more**.\n2. **Required:** the link starts with all accounts and all zones. Under **Account Resources** choose your account, and under **Zone Resources** choose **Specific zone** and your zone, so the token can touch nothing else.\n3. Create the token and paste it below, with your AbuseIPDB API key.\n\nEverything else is set up for you: the zone, the IP list `block_ips` and the two firewall rules (Block listed IPs, Skip to log visitors) are created when missing, never twice. A missing permission is named here.",
         "data": {
-          "email": "Cloudflare account email",
-          "global_token": "Cloudflare Global API Key",
-          "abuseipdb_token": "AbuseIPDB API key",
-          "abuse_confidence_score": "AbuseIPDB score that counts as high risk (0-100)",
-          "recheck_days": "Days before an IP is looked up again",
-          "scan_interval_minutes": "Update interval (minutes)"
+          "api_token": "Cloudflare API token",
+          "abuseipdb_token": "AbuseIPDB API key"
         }
       },
       "zone_select": {
@@ -21,19 +17,41 @@
       },
       "list_select": {
         "title": "Choose the IP list to block with",
+        "description": "Cloudflare would not create a new IP list (your plan's list limit may be reached). Choose an existing IP list instead.",
         "data": {
           "list_name": "IP list"
+        }
+      },
+      "reconfigure": {
+        "title": "New Cloudflare API token",
+        "description": "Paste a new API token for {zone_name}. [Create one here]({token_url}) with these permissions (add any row that is missing):\n{permissions}\nUnder Account Resources choose your account and under Zone Resources only this zone.\nA setup that still uses the Global API Key moves to the token, and the email and Global API Key are removed.",
+        "data": {
+          "api_token": "Cloudflare API token"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Cloudflare needs a new API token",
+        "description": "Cloudflare rejected the token for {zone_name}, or this setup still uses a Global API Key, which is no longer supported. [Create a token]({token_url}) with these permissions (add any row that is missing):\n{permissions}\nUnder Account Resources choose your account and under Zone Resources only this zone.",
+        "data": {
+          "api_token": "Cloudflare API token"
         }
       }
     },
     "error": {
-      "auth_failed": "Cloudflare rejected the email or Global API Key.",
-      "connection_error": "Could not reach Cloudflare. Try again."
+      "invalid_token": "Cloudflare does not accept this API token (check that it was pasted whole, with no spaces or line breaks).",
+      "token_inactive": "This API token is disabled or expired.",
+      "no_zone": "The token cannot read any zone. Add Zone > Zone > Read for your zone.",
+      "wrong_zone": "The token cannot read the zone this entry monitors. Choose that zone under Zone Resources.",
+      "missing_permissions": "The token is missing: {missing}. Edit the token in Cloudflare, add them, and try again.",
+      "list_create_failed": "Cloudflare would not create the IP list block_ips. Create it under Manage Account > Configurations > Lists, then try again.",
+      "rule_create_failed": "Cloudflare would not add the firewall rules (the Free plan allows 5 custom rules). Create them by hand as described in the README, then try again.",
+      "invalid_abuseipdb_key": "AbuseIPDB rejected this API key (check that it was pasted whole, with no spaces or line breaks).",
+      "connection_error": "Could not reach Cloudflare or AbuseIPDB. Try again."
     },
     "abort": {
       "already_configured": "This zone is already configured.",
-      "no_zones_found": "This Cloudflare account has no zones.",
-      "no_rules_lists_found": "No IP list found. Create one under Manage Account > Configurations > Lists, then try again."
+      "reconfigure_successful": "The new API token is saved.",
+      "reauth_successful": "The new API token is saved."
     }
   },
   "options": {
@@ -43,12 +61,78 @@
         "data": {
           "abuse_confidence_score": "AbuseIPDB score that counts as high risk (0-100)",
           "mode": "Mode (Monitor only reports, Active adds high-risk IPs to the list)",
+          "recheck_enabled": "Look IPs up again after some days",
           "recheck_days": "Days before an IP is looked up again",
           "under_attack_mode": "Turn on Under Attack Mode on a traffic spike",
           "under_attack_request_threshold": "Requests per update interval that count as a spike",
           "scan_interval_minutes": "Update interval (minutes)"
         }
       }
+    }
+  },
+  "services": {
+    "check_ip": {
+      "name": "Check IP",
+      "description": "Looks one IP address up on AbuseIPDB and returns its score.",
+      "fields": {
+        "ip": {
+          "name": "IP address",
+          "description": "IPv4 or IPv6 address."
+        },
+        "config_entry_id": {
+          "name": "Zone",
+          "description": "Needed only when more than one zone is configured."
+        }
+      }
+    },
+    "block_ip": {
+      "name": "Block IP",
+      "description": "Adds an IP address to the Cloudflare block list.",
+      "fields": {
+        "ip": {
+          "name": "IP address",
+          "description": "IPv4 or IPv6 address."
+        },
+        "config_entry_id": {
+          "name": "Zone",
+          "description": "Needed only when more than one zone is configured."
+        }
+      }
+    },
+    "unblock_ip": {
+      "name": "Unblock IP",
+      "description": "Removes an IP address from the Cloudflare block list. It is not added back automatically.",
+      "fields": {
+        "ip": {
+          "name": "IP address",
+          "description": "IPv4 or IPv6 address."
+        },
+        "config_entry_id": {
+          "name": "Zone",
+          "description": "Needed only when more than one zone is configured."
+        }
+      }
+    },
+    "refresh": {
+      "name": "Refresh",
+      "description": "Updates every sensor now instead of waiting for the next interval.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Zone",
+          "description": "Needed only when more than one zone is configured."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "entry_not_loaded": {
+      "message": "No loaded Cloudflare Abuse Monitor entry matches."
+    },
+    "choose_entry": {
+      "message": "More than one zone is configured: choose one with config_entry_id."
+    },
+    "ip_not_listed": {
+      "message": "{ip} is not in the block list. It will not be added back automatically."
     }
   }
 }

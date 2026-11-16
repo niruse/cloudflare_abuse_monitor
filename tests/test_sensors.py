@@ -8,8 +8,8 @@ UNIQUE_IDS = {
     "traffic": "owner@example.com_example.com_traffic_summary",
     "skip": "owner@example.com_example.com_skip_ips",
     "list": "owner@example.com_example.com_list_ips",
-    "high_risk": "owner@example.com_zone0000000000000000000000000001_high_risk_ips",
-    "under_attack": "owner_example_com_zone0000000000000000000000000001_under_attack",
+    "high_risk": "owner@example.com_0123456789abcdef0123456789abcdef_high_risk_ips",
+    "under_attack": "owner_example_com_0123456789abcdef0123456789abcdef_under_attack",
 }
 
 
@@ -30,7 +30,7 @@ async def test_all_sensors_from_one_cycle(hass, config_dir, cf, make_entry, capl
     coordinator = await setup(hass, entry)
 
     assert state(hass, "traffic").state == "1000"
-    assert state(hass, "traffic").attributes["zone_id"] == "zone0000000000000000000000000001"
+    assert state(hass, "traffic").attributes["zone_id"] == "0123456789abcdef0123456789abcdef"
     assert state(hass, "skip").state == "2"
     assert state(hass, "list").state == "1"
     assert state(hass, "list").attributes["current_list_ips"] == ["203.0.113.20"]

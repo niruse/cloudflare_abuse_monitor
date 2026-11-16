@@ -10,6 +10,7 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -17,11 +18,15 @@ from homeassistant.util import dt as dt_util
 from . import api
 from .const import (
     CHECKED_IPS_FILENAME,
+    CONF_ABUSEIPDB_TOKEN,
+    CONF_API_TOKEN,
+    CONF_RECHECK_ENABLED,
     DEFAULT_ABUSE_CONFIDENCE_SCORE,
     DEFAULT_RECHECK_DAYS,
     DEFAULT_SCAN_INTERVAL_MINUTES,
     DEFAULT_UNDER_ATTACK_THRESHOLD,
     DOMAIN,
+    FALLBACK_SECURITY_LEVEL,
     MODE_ACTIVE,
     MODE_MONITOR,
     UNDER_ATTACK_LEVEL,
@@ -36,7 +41,7 @@ _CACHE_LOCK = asyncio.Lock()
 
 
 def owned_level_store(hass: HomeAssistant, entry_id: str) -> Store:
-    """Remembers whether this entry turned Under Attack Mode on, and what level to restore."""
+    """Per entry: who turned Under Attack Mode on, the level to restore, and unblocked IPs."""
     return Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry_id}")
 
 
@@ -91,7 +96,7 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self._cache_path = hass.config.path(CHECKED_IPS_FILENAME)
         self._store = owned_level_store(hass, entry.entry_id)
-        self._owned: dict[str, Any] | None = None
+        self._state: dict[str, Any] | None = None
         # (window start, request count, time) from the previous cycle, for the Under Attack delta.
         self._last_count: tuple[str, int, datetime] | None = None
 
@@ -101,23 +106,29 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _job(self, func, *args):
         return await self.hass.async_add_executor_job(func, *args)
 
+    @property
+    def headers(self) -> dict[str, str]:
+        return api.get_headers(self.entry.data[CONF_API_TOKEN])
+
     async def _try(self, what: str, func, *args):
         """Run one step; a failure is reported on its own sensor instead of blanking all of them."""
         try:
             return await func(*args), None
+        except api.CloudflareAuthError as err:
+            # Token revoked or a permission removed: ask for a new token instead of retrying.
+            raise ConfigEntryAuthFailed(str(err)) from err
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Cloudflare Abuse Monitor: %s failed: %s", what, err)
             return None, str(err) or type(err).__name__
 
     async def _async_update_data(self) -> dict[str, Any]:
         data = self.entry.data
-        headers = api.get_headers(data["email"], data["global_token"])
+        headers = self.headers
         now = dt_util.utcnow()
         window = (api.iso_utc(now.replace(hour=0, minute=0, second=0, microsecond=0)), api.iso_utc(now))
 
         traffic, traffic_err = await self._try(
-            "traffic summary", self._job, api.fetch_today_traffic_summary,
-            data["email"], data["global_token"], data["zone_id"],
+            "traffic summary", self._job, api.fetch_today_traffic_summary, headers, data["zone_id"],
         )
         skip_ips, skip_err = await self._try(
             "skip IPs", self._job, api.get_skip_ips, data["zone_id"], *window, headers
@@ -167,8 +178,11 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data = self.entry.data
         threshold = int(float(self.option("abuse_confidence_score", DEFAULT_ABUSE_CONFIDENCE_SCORE)))
         recheck_days = int(self.option("recheck_days", DEFAULT_RECHECK_DAYS))
+        recheck_enabled = bool(self.option(CONF_RECHECK_ENABLED, True))
         mode = self.option("mode", MODE_MONITOR)
-        candidates = sorted(set(skip_ips) - set(list_ips))
+        state = await self._async_state()
+        # IPs unblocked with the unblock_ip service are never added back automatically.
+        candidates = sorted(set(skip_ips) - set(list_ips) - set(state["allowed_ips"]))
 
         ips_to_check: list[str] = []
         high_risk: list[str] = []
@@ -178,12 +192,13 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             stop_lookups = False
             for ip in candidates:
                 checked_at, score = parse_cache_entry(cache.get(ip))
-                if checked_at is None or (now - checked_at).days >= recheck_days:
+                due = checked_at is None or (recheck_enabled and (now - checked_at).days >= recheck_days)
+                if due:
                     if stop_lookups:
                         continue
                     ips_to_check.append(ip)
                     try:
-                        result = await self._job(api.check_abuse_ip, ip, data["abuseipdb_token"])
+                        result = await self._job(api.check_abuse_ip, ip, data[CONF_ABUSEIPDB_TOKEN])
                     except api.AbuseIPDBRateLimited:
                         _LOGGER.warning("AbuseIPDB daily quota reached; the remaining IPs wait for a later cycle")
                         stop_lookups = True
@@ -216,6 +231,7 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             {
                 "abuse_confidence_score_threshold": threshold,
                 "recheck_days": recheck_days,
+                "recheck_enabled": recheck_enabled,
                 "mode": mode,
                 "high_risk_ip_list": high_risk,
                 "ips_to_check": ips_to_check,
@@ -239,20 +255,21 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if previous and previous[0] == traffic["from"] and now - previous[2] <= 2 * self.update_interval:
             delta = current - previous[1]
 
-        owned = await self._async_owned()
+        owned = await self._async_state()
         level = await self._job(api.get_security_level, zone_id, headers)
 
         if automation_on and delta is not None and delta >= threshold and level != UNDER_ATTACK_LEVEL:
             await self._job(api.set_security_level, zone_id, headers, UNDER_ATTACK_LEVEL)
-            await self._async_save_owned(True, level)
+            await self._async_save_state(enabled_by_us=True, restore_level=level, manual=False)
             level = UNDER_ATTACK_LEVEL
-        elif not automation_on and owned["enabled_by_us"]:
+        elif not automation_on and owned["enabled_by_us"] and not owned["manual"]:
             # Switched off after it fired: undo our own change only, back to the level it replaced.
+            # A level set with the switch is left alone; the switch turns it off.
             if level == UNDER_ATTACK_LEVEL:
-                restore = owned["restore_level"] or "high"
+                restore = owned["restore_level"] or FALLBACK_SECURITY_LEVEL
                 await self._job(api.set_security_level, zone_id, headers, restore)
                 level = restore
-            await self._async_save_owned(False, None)
+            await self._async_save_state(enabled_by_us=False, restore_level=None, manual=False)
 
         active = level == UNDER_ATTACK_LEVEL
         attrs = {
@@ -264,7 +281,7 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "delta": delta,
             "security_level": level,
             "under_attack_mode_active": active,
-            "enabled_by_integration": self._owned["enabled_by_us"],
+            "enabled_by_integration": owned["enabled_by_us"],
         }
         if mode != MODE_ACTIVE:
             attrs["reason"] = "Monitoring mode is active"
@@ -272,18 +289,80 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             attrs["reason"] = "Under attack mode is disabled"
         return _section("on" if active else "off", attrs)
 
-    async def _async_owned(self) -> dict[str, Any]:
-        if self._owned is None:
+    async def _async_state(self) -> dict[str, Any]:
+        if self._state is None:
             stored = await self._store.async_load() or {}
-            self._owned = {
+            self._state = {
                 "enabled_by_us": bool(stored.get("enabled_by_us")),
                 "restore_level": stored.get("restore_level"),
+                "manual": bool(stored.get("manual")),
+                "allowed_ips": list(stored.get("allowed_ips") or []),
             }
-        return self._owned
+        return self._state
 
-    async def _async_save_owned(self, enabled_by_us: bool, restore_level: str | None) -> None:
-        self._owned = {"enabled_by_us": enabled_by_us, "restore_level": restore_level}
-        await self._store.async_save(self._owned)
+    async def _async_save_state(self, **changes) -> None:
+        state = await self._async_state()
+        state.update(changes)
+        await self._store.async_save(state)
+
+    # --- actions for the switch and the services ------------------------------------
+
+    async def _call(self, func, *args):
+        try:
+            return await self._job(func, *args)
+        except api.CloudflareAuthError as err:
+            self.entry.async_start_reauth(self.hass)
+            raise ConfigEntryAuthFailed(str(err)) from err
+
+    async def async_set_under_attack(self, on: bool) -> None:
+        """The Under Attack switch: on remembers the level it replaces, off restores it."""
+        zone_id = self.entry.data["zone_id"]
+        headers = self.headers
+        state = await self._async_state()
+        level = await self._call(api.get_security_level, zone_id, headers)
+        if on:
+            if level != UNDER_ATTACK_LEVEL:
+                await self._call(api.set_security_level, zone_id, headers, UNDER_ATTACK_LEVEL)
+                await self._async_save_state(enabled_by_us=True, restore_level=level, manual=True)
+        else:
+            if level == UNDER_ATTACK_LEVEL:
+                restore = (state["restore_level"] if state["enabled_by_us"] else None) or FALLBACK_SECURITY_LEVEL
+                await self._call(api.set_security_level, zone_id, headers, restore)
+            await self._async_save_state(enabled_by_us=False, restore_level=None, manual=False)
+        await self.async_request_refresh()
+
+    async def async_check_ip(self, ip: str) -> dict[str, Any]:
+        """Look one IP up now; a score is cached like the automatic lookups."""
+        result = await self._job(api.check_abuse_ip, ip, self.entry.data[CONF_ABUSEIPDB_TOKEN])
+        result.pop("status", None)
+        if "error" not in result:
+            async with _CACHE_LOCK:
+                cache = await self._job(_read_cache, self._cache_path)
+                cache[ip] = {"checked": dt_util.utcnow().isoformat(), "score": result["abuse_confidence_score"]}
+                await self._job(_write_cache, self._cache_path, cache)
+        return result
+
+    async def async_block_ip(self, ip: str) -> None:
+        data = self.entry.data
+        await self._call(api.add_ips_to_list, data["account_id"], data["list_id"], [ip], self.headers)
+        state = await self._async_state()
+        if ip in state["allowed_ips"]:
+            await self._async_save_state(allowed_ips=[a for a in state["allowed_ips"] if a != ip])
+        await self.async_request_refresh()
+
+    async def async_unblock_ip(self, ip: str) -> bool:
+        """Remove ip from the list and never add it back automatically. False: it was not listed."""
+        data = self.entry.data
+        items = await self._call(api.get_list_items, data["account_id"], data["list_id"], self.headers)
+        item_id = items.get(ip)
+        if item_id is None:
+            return False  # nothing changes: the IP is not exempted from Active mode either
+        await self._call(api.remove_list_items, data["account_id"], data["list_id"], [item_id], self.headers)
+        state = await self._async_state()
+        if ip not in state["allowed_ips"]:
+            await self._async_save_state(allowed_ips=[*state["allowed_ips"], ip])
+        await self.async_request_refresh()
+        return True
 
 
 def _section(value, attrs: dict, error: str | None = None) -> dict[str, Any]:

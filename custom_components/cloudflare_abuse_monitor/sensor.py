@@ -2,10 +2,8 @@ from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
-from .coordinator import CloudflareAbuseMonitorCoordinator
+from .entity import CloudflareEntity
 
 # The coordinator does all the I/O; entities only read its data.
 PARALLEL_UPDATES = 0
@@ -22,27 +20,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     ])
 
 
-class CloudflareBaseSensor(CoordinatorEntity[CloudflareAbuseMonitorCoordinator], SensorEntity):
-    """Shows one section of the coordinator's data: {"value", "attrs", "error"}."""
-
-    _section: str
-
-    def __init__(self, coordinator: CloudflareAbuseMonitorCoordinator, entry: ConfigEntry):
-        super().__init__(coordinator)
-        self._entry = entry
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-            "name": "Cloudflare Abuse Monitor",
-            "manufacturer": "niruse",
-            "entry_type": "service",
-        }
-
-    @property
-    def _payload(self) -> dict:
-        return (self.coordinator.data or {}).get(self._section) or {}
+class CloudflareBaseSensor(CloudflareEntity, SensorEntity):
+    """A sensor showing one section of the coordinator's data."""
 
     @property
     def native_value(self):
@@ -67,8 +46,8 @@ class CloudflareTrafficSummarySensor(CloudflareBaseSensor):
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry)
         data = entry.data
-        self._attr_name = f"{data['email']} {data['zone_name']} Traffic Summary"
-        self._attr_unique_id = f"{data['email']}_{data['zone_name']}_traffic_summary".replace(" ", "_").lower()
+        self._attr_name = f"{data['zone_name']} Traffic Summary"
+        self._attr_unique_id = f"{self._prefix}_{data['zone_name']}_traffic_summary".replace(" ", "_").lower()
         self._attr_native_unit_of_measurement = "requests"
 
 
@@ -78,8 +57,8 @@ class CloudflareSkipIPsSensor(CloudflareBaseSensor):
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry)
         data = entry.data
-        self._attr_name = f"{data['email']} {data['zone_name']} Skip IPs"
-        self._attr_unique_id = f"{data['email']}_{data['zone_name']}_skip_ips".replace(" ", "_").lower()
+        self._attr_name = f"{data['zone_name']} Skip IPs"
+        self._attr_unique_id = f"{self._prefix}_{data['zone_name']}_skip_ips".replace(" ", "_").lower()
         self._attr_native_unit_of_measurement = "IPs"
 
 
@@ -89,8 +68,8 @@ class CloudflareListIPsSensor(CloudflareBaseSensor):
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry)
         data = entry.data
-        self._attr_name = f"{data['email']} {data['zone_name']} List IPs"
-        self._attr_unique_id = f"{data['email']}_{data['zone_name']}_list_ips".replace(" ", "_").lower()
+        self._attr_name = f"{data['zone_name']} List IPs"
+        self._attr_unique_id = f"{self._prefix}_{data['zone_name']}_list_ips".replace(" ", "_").lower()
         self._attr_native_unit_of_measurement = "IPs"
 
 
@@ -100,8 +79,8 @@ class CloudflareHighRiskIPsSensor(CloudflareBaseSensor):
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry)
         data = entry.data
-        self._attr_name = f"{data['email']} {data['zone_name']} High Risk IPs"
-        self._attr_unique_id = f"{data['email']}_{data['zone_id']}_high_risk_ips".replace(" ", "_").lower()
+        self._attr_name = f"{data['zone_name']} High Risk IPs"
+        self._attr_unique_id = f"{self._prefix}_{data['zone_id']}_high_risk_ips".replace(" ", "_").lower()
         self._attr_native_unit_of_measurement = "IPs"
 
 
@@ -111,5 +90,5 @@ class CloudflareUnderAttackSensor(CloudflareBaseSensor):
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry)
         data = entry.data
-        self._attr_name = f"{data['email']} {data['zone_name']} Under Attack Mode"
-        self._attr_unique_id = f"{data['email']}_{data['zone_id']}_under_attack".replace("@", "_").replace(".", "_").lower()
+        self._attr_name = f"{data['zone_name']} Under Attack Mode"
+        self._attr_unique_id = f"{self._prefix}_{data['zone_id']}_under_attack".replace("@", "_").replace(".", "_").lower()

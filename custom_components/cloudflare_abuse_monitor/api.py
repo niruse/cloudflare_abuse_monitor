@@ -2,9 +2,15 @@
 
 Every function here does network I/O with ``requests`` and must run in the executor.
 Failures raise, so the caller can tell "the API said zero" apart from "the API failed".
+
+Error text is built from the status code and Cloudflare's ``errors[].message`` only, never
+from the request, so a token or key can never end up in a log line or an exception.
 """
+import json
 import logging
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 import requests
 
@@ -15,72 +21,192 @@ CLOUDFLARE_ZONES_URL = f"{CLOUDFLARE_API_URL}/zones"
 CLOUDFLARE_GRAPHQL_URL = f"{CLOUDFLARE_API_URL}/graphql"
 ABUSEIPDB_CHECK_URL = "https://api.abuseipdb.com/api/v2/check"
 
+CUSTOM_PHASE = "http_request_firewall_custom"
+BLOCK_RULE_REF = "cfam_block_ips"
+SKIP_RULE_REF = "cfam_skip_log"
+
 # Without a timeout a stalled connection would hold an executor thread forever.
 TIMEOUT = 30
+
+# Least-privilege token: (permissionGroupKey, type, display name shown in the dashboard).
+TOKEN_PERMISSIONS = (
+    ("zone", "read", "Zone > Zone > Read"),
+    ("analytics", "read", "Zone > Analytics > Read"),
+    ("zone_settings", "edit", "Zone > Zone Settings > Edit"),
+    ("zone_waf", "edit", "Zone > Zone WAF > Edit"),
+    ("account_filter_lists", "edit", "Account > Account Filter Lists > Edit"),
+)
+TOKEN_NAME = "Home Assistant Abuse Monitor"
+
+
+def _create_token_url():
+    keys = [{"key": key, "type": kind} for key, kind, _ in TOKEN_PERMISSIONS]
+    return (
+        "https://dash.cloudflare.com/profile/api-tokens"
+        f"?permissionGroupKeys={quote(json.dumps(keys, separators=(',', ':')), safe='')}"
+        f"&accountId={quote('*', safe='')}&zoneId=all&name={quote(TOKEN_NAME, safe='')}"
+    )
+
+
+# Opens the dashboard's "create token" page with the permissions pre-filled. Cloudflare
+# documents zone, analytics and zone_settings as keys; zone_waf and account_filter_lists are
+# not in its published list, and the dashboard drops an unknown key silently, so the setup
+# text asks the user to check all five rows. accountId/zoneId are required by the URL format
+# (all accounts, all zones); the setup text tells the user to narrow both.
+CREATE_TOKEN_URL = _create_token_url()
+
+# Only these characters can be sent in a header. Anything else (a pasted newline, a tab)
+# would make requests raise InvalidHeader, whose message contains the whole header value.
+_SECRET_RE = re.compile(r"[A-Za-z0-9._~+/=-]+")
+
+
+def valid_secret(value):
+    """True when value can be sent as a token or key without leaking through an error."""
+    return bool(value) and _SECRET_RE.fullmatch(value) is not None
+
+# Cloudflare error codes that mean "this token/credential is not accepted".
+_AUTH_CODES = {1000, 1001, 6003, 6100, 6102, 6103, 6111, 9103, 9106, 9109, 10000}
+# GraphQL answers HTTP 200 with errors[]. Only these mean the token: a plan or dataset limit
+# ("does not have access to the path", a too-old time range) is not something a new token fixes.
+_GRAPHQL_AUTH_CODES = {"authz", "authn", "unauthorized", "forbidden"}
+_GRAPHQL_AUTH_TEXT = re.compile(r"not authori[sz]ed|authentication error", re.I)
 
 
 class CloudflareApiError(Exception):
     """Cloudflare answered, but not with the data we asked for."""
+
+    def __init__(self, message, status=None, codes=()):
+        super().__init__(message)
+        self.status = status
+        self.codes = tuple(codes)
+
+
+class CloudflareAuthError(CloudflareApiError):
+    """The token is invalid, or lacks the permission this call needs (HTTP 401/403)."""
+
+
+class CloudflareNotFound(CloudflareApiError):
+    """HTTP 404."""
 
 
 class AbuseIPDBRateLimited(Exception):
     """AbuseIPDB refused the lookup because the daily quota is used up."""
 
 
-def get_headers(email, api_key):
-    return {
-        "X-Auth-Email": email,
-        "X-Auth-Key": api_key,
-        "Content-Type": "application/json",
-    }
+class AbuseIPDBError(Exception):
+    """AbuseIPDB answered with an error that is not about the key."""
+
+
+def get_headers(api_token):
+    return {"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"}
 
 
 def iso_utc(moment):
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _payload(response):
+    try:
+        payload = response.json()
+    except ValueError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _errors(payload):
+    errors = payload.get("errors") or []
+    return [e for e in errors if isinstance(e, dict)]
+
+
+def _raise_for(response, payload, what):
+    status = response.status_code
+    errors = _errors(payload)
+    codes = [e.get("code") for e in errors if isinstance(e.get("code"), int)]
+    detail = "; ".join(str(e.get("message", "")) for e in errors if e.get("message")) or "no detail"
+    message = f"{what}: HTTP {status}: {detail}"
+    if status in (401, 403) or (status == 400 and set(codes) & _AUTH_CODES):
+        raise CloudflareAuthError(message, status, codes)
+    if status == 404:
+        raise CloudflareNotFound(message, status, codes)
+    raise CloudflareApiError(message, status, codes)
+
+
+def _send(method, url, headers, what, **kwargs):
+    try:
+        return requests.request(method, url, headers=headers, timeout=TIMEOUT, **kwargs)
+    except requests.exceptions.InvalidHeader:
+        # The original message holds the header value (the token); never pass it on.
+        raise CloudflareAuthError(f"{what}: the API token contains characters a header cannot carry") from None
+
+
+def _call(method, url, headers, what, **kwargs):
+    """Make one Cloudflare v4 call and return its JSON body, or raise a typed error."""
+    response = _send(method, url, headers, what, **kwargs)
+    payload = _payload(response)
+    if response.status_code >= 300 or payload.get("success") is False:
+        _raise_for(response, payload, what)
+    return payload
+
+
+def _graphql_auth_error(error):
+    """Missing Analytics Read comes back as HTTP 200 with errors[]; tell it from a plan limit."""
+    code = str((error.get("extensions") or {}).get("code") or "").lower()
+    if code:
+        return code in _GRAPHQL_AUTH_CODES
+    return bool(_GRAPHQL_AUTH_TEXT.search(str(error.get("message", ""))))
+
+
 def _graphql_zone(headers, query):
-    response = requests.post(
-        CLOUDFLARE_GRAPHQL_URL, headers=headers, json={"query": query}, timeout=TIMEOUT
-    )
-    response.raise_for_status()
-    payload = response.json()
-    if payload.get("errors"):
-        raise CloudflareApiError(payload["errors"][0].get("message", str(payload["errors"])))
+    response = _send("POST", CLOUDFLARE_GRAPHQL_URL, headers, "GraphQL", json={"query": query})
+    payload = _payload(response)
+    if response.status_code >= 300:
+        _raise_for(response, payload, "GraphQL")
+    errors = _errors(payload)
+    if errors:
+        first = errors[0]
+        message = str(first.get("message", "GraphQL error"))
+        if _graphql_auth_error(first):
+            raise CloudflareAuthError(message)
+        raise CloudflareApiError(message)
     zones = ((payload.get("data") or {}).get("viewer") or {}).get("zones") or []
     if not zones:
         raise CloudflareApiError("Cloudflare returned no analytics for this zone")
     return zones[0]
 
 
-def fetch_zones(email, api_key):
-    """Return {"success": bool, "result": [zones]}, following every page."""
-    headers = get_headers(email, api_key)
+# --- token ---------------------------------------------------------------------------
+
+def verify_user_token(headers):
+    """Return the token status (active, disabled, expired). Raises CloudflareAuthError if unknown."""
+    payload = _call("GET", f"{CLOUDFLARE_API_URL}/user/tokens/verify", headers, "Token verify")
+    return (payload.get("result") or {}).get("status", "")
+
+
+def verify_account_token(account_id, headers):
+    """Same check for an account-owned token, which /user/tokens/verify does not know."""
+    payload = _call(
+        "GET", f"{CLOUDFLARE_API_URL}/accounts/{account_id}/tokens/verify", headers, "Token verify"
+    )
+    return (payload.get("result") or {}).get("status", "")
+
+
+# --- zones and analytics ---------------------------------------------------------------
+
+def fetch_zones(headers):
+    """Return every zone the token can read, following every page."""
     zones = []
     page = 1
     while True:
-        response = requests.get(
-            CLOUDFLARE_ZONES_URL,
-            headers=headers,
-            params={"page": page, "per_page": 50},
-            timeout=TIMEOUT,
+        payload = _call(
+            "GET", CLOUDFLARE_ZONES_URL, headers, "Zones", params={"page": page, "per_page": 50}
         )
-        # Bad credentials come back as 400/403 with success=false, not as a network error.
-        if response.status_code in (400, 401, 403):
-            return {"success": False, "result": []}
-        response.raise_for_status()
-        payload = response.json()
-        if not payload.get("success", False):
-            return {"success": False, "result": []}
-        zones.extend(payload.get("result", []))
+        zones.extend(payload.get("result") or [])
         if page >= (payload.get("result_info") or {}).get("total_pages", 1):
-            return {"success": True, "result": zones}
+            return zones
         page += 1
 
 
-def fetch_today_traffic_summary(email, api_key, zone_id):
-    headers = get_headers(email, api_key)
-
+def fetch_today_traffic_summary(headers, zone_id):
     now = datetime.now(timezone.utc)
     today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -125,6 +251,27 @@ def fetch_today_traffic_summary(email, api_key, zone_id):
     }
 
 
+def probe_analytics(headers, zone_id):
+    """Read one row of each dataset the integration uses. Raises CloudflareAuthError without Analytics Read."""
+    now = datetime.now(timezone.utc)
+    geq, lt = iso_utc(now - timedelta(hours=1)), iso_utc(now)
+    query = f"""
+    {{
+      viewer {{
+        zones(filter: {{zoneTag: "{zone_id}"}}) {{
+          httpRequests1hGroups(limit: 1, filter: {{datetime_geq: "{geq}", datetime_lt: "{lt}"}}) {{
+            sum {{ requests }}
+          }}
+          firewallEventsAdaptive(limit: 1, filter: {{datetime_geq: "{geq}", datetime_lt: "{lt}"}}) {{
+            action
+          }}
+        }}
+      }}
+    }}
+    """
+    _graphql_zone(headers, query)
+
+
 def get_skip_ips(zone_id, datetime_geq, datetime_lt, headers):
     # Filter on the server so the 1000-event limit is spent on "skip" events only.
     query = f"""
@@ -151,38 +298,233 @@ def get_skip_ips(zone_id, datetime_geq, datetime_lt, headers):
     return sorted({event["clientIP"] for event in events if event.get("action") == "skip"})
 
 
+# --- IP lists ----------------------------------------------------------------------------
+
+def fetch_ip_lists(account_id, headers):
+    """Return the account's lists of kind ip, as Cloudflare describes them."""
+    payload = _call(
+        "GET", f"{CLOUDFLARE_API_URL}/accounts/{account_id}/rules/lists", headers, "Lists"
+    )
+    return [item for item in payload.get("result") or [] if item.get("kind", "ip") == "ip"]
+
+
 def fetch_rules_lists(account_id, headers):
     """Return {list name: list id} for the account's IP lists."""
-    url = f"{CLOUDFLARE_API_URL}/accounts/{account_id}/rules/lists"
-    response = requests.get(url, headers=headers, timeout=TIMEOUT)
-    response.raise_for_status()
-    return {
-        item["name"]: item["id"]
-        for item in response.json().get("result", [])
-        if item.get("kind", "ip") == "ip"
-    }
+    return {item["name"]: item["id"] for item in fetch_ip_lists(account_id, headers)}
 
 
-def get_current_list_ips(account_id, list_id, headers):
-    """Return every IP in the list (the endpoint is cursor-paginated, 25 items per page by default)."""
+def create_ip_list(account_id, name, headers):
+    payload = _call(
+        "POST",
+        f"{CLOUDFLARE_API_URL}/accounts/{account_id}/rules/lists",
+        headers,
+        "Create list",
+        json={
+            "name": name,
+            "kind": "ip",
+            "description": "IPs blocked by Cloudflare Abuse Monitor (Home Assistant)",
+        },
+    )
+    return payload.get("result") or {}
+
+
+def update_list_description(account_id, list_id, description, headers):
+    """Write the description back unchanged: proves Filter Lists Edit without changing anything."""
+    _call(
+        "PUT",
+        f"{CLOUDFLARE_API_URL}/accounts/{account_id}/rules/lists/{list_id}",
+        headers,
+        "Update list",
+        json={"description": description or ""},
+    )
+
+
+def get_list_items(account_id, list_id, headers):
+    """Return {ip: item id} for every IP in the list (cursor-paginated, 25 per page by default)."""
     url = f"{CLOUDFLARE_API_URL}/accounts/{account_id}/rules/lists/{list_id}/items"
-    current_ips = set()
+    items = {}
     cursor = None
     while True:
         params = {"per_page": 500}
         if cursor:
             params["cursor"] = cursor
-        response = requests.get(url, headers=headers, params=params, timeout=TIMEOUT)
-        response.raise_for_status()
-        payload = response.json()
-        for item in payload.get("result", []):
+        payload = _call("GET", url, headers, "List items", params=params)
+        for item in payload.get("result") or []:
             ip = item.get("ip")
             if ip:
-                current_ips.add(ip)
+                items[ip] = item.get("id")
         cursor = ((payload.get("result_info") or {}).get("cursors") or {}).get("after")
         if not cursor:
-            return current_ips
+            return items
 
+
+def get_current_list_ips(account_id, list_id, headers):
+    """Return every IP in the list."""
+    return set(get_list_items(account_id, list_id, headers))
+
+
+def add_ips_to_list(account_id, list_id, new_ips, headers):
+    url = f"{CLOUDFLARE_API_URL}/accounts/{account_id}/rules/lists/{list_id}/items"
+    _call("POST", url, headers, "Add IPs", json=[{"ip": ip} for ip in new_ips])
+    _LOGGER.info("Added %s to the Cloudflare list", ", ".join(new_ips))
+
+
+def remove_list_items(account_id, list_id, item_ids, headers):
+    url = f"{CLOUDFLARE_API_URL}/accounts/{account_id}/rules/lists/{list_id}/items"
+    _call("DELETE", url, headers, "Remove IPs", json={"items": [{"id": i} for i in item_ids]})
+
+
+# --- security level ------------------------------------------------------------------
+
+def get_security_level(zone_id, headers):
+    url = f"{CLOUDFLARE_API_URL}/zones/{zone_id}/settings/security_level"
+    return (_call("GET", url, headers, "Security level").get("result") or {}).get("value", "")
+
+
+def set_security_level(zone_id, headers, level):
+    url = f"{CLOUDFLARE_API_URL}/zones/{zone_id}/settings/security_level"
+    _call("PATCH", url, headers, f"Set security level to {level}", json={"value": level})
+    _LOGGER.info("Set Cloudflare security level to %s", level)
+
+
+# --- WAF custom rules ----------------------------------------------------------------
+
+def get_custom_entrypoint(zone_id, headers):
+    """Return the zone's custom-rules entrypoint ruleset, or None when it does not exist yet."""
+    url = f"{CLOUDFLARE_API_URL}/zones/{zone_id}/rulesets/phases/{CUSTOM_PHASE}/entrypoint"
+    try:
+        return _call("GET", url, headers, "Custom rules").get("result") or {}
+    except CloudflareNotFound:
+        return None
+
+
+def create_custom_entrypoint(zone_id, rules, headers):
+    """Only for a zone with no entrypoint: a PUT replaces every rule in an existing one."""
+    url = f"{CLOUDFLARE_API_URL}/zones/{zone_id}/rulesets/phases/{CUSTOM_PHASE}/entrypoint"
+    _call("PUT", url, headers, "Create custom rules", json={"rules": rules})
+
+
+def add_custom_rule(zone_id, ruleset_id, rule, headers, before=None):
+    """Add one rule to an existing ruleset, leaving the other rules alone.
+
+    Appended at the end, or placed right before the rule whose id is ``before``.
+    """
+    url = f"{CLOUDFLARE_API_URL}/zones/{zone_id}/rulesets/{ruleset_id}/rules"
+    body = dict(rule)
+    if before:
+        body["position"] = {"before": before}
+    _call("POST", url, headers, "Add custom rule", json=body)
+
+
+def block_rule(list_name):
+    return {
+        "ref": BLOCK_RULE_REF,
+        "description": "Cloudflare Abuse Monitor: block listed IPs",
+        "expression": f"(ip.src in ${list_name})",
+        "action": "block",
+        "enabled": True,
+    }
+
+
+def skip_rule(list_name):
+    # Every visitor not already blocked produces a "skip" firewall event, which is the only
+    # thing firewallEventsAdaptive(action: "skip") sees. Placed last it skips nothing real.
+    return {
+        "ref": SKIP_RULE_REF,
+        "description": "Cloudflare Abuse Monitor: log visitors for checking",
+        "expression": f"not (ip.src in ${list_name})",
+        "action": "skip",
+        "action_parameters": {"ruleset": "current"},
+        "logging": {"enabled": True},
+        "enabled": True,
+    }
+
+
+def _norm(expression):
+    """Lower case, single spaces, outer parentheses removed: "(ip.src  in $X)" -> "ip.src in $x"."""
+    text = re.sub(r"\s+", " ", expression or "").strip().lower()
+    while text.startswith("(") and text.endswith(")") and _balanced(text[1:-1]):
+        text = text[1:-1].strip()
+    return text
+
+
+def _balanced(text):
+    depth = 0
+    for char in text:
+        depth += {"(": 1, ")": -1}.get(char, 0)
+        if depth < 0:
+            return False
+    return depth == 0
+
+
+# The README up to v1.5 asked for a "Skip by country" rule listing every country.
+_COUNTRY_SET = re.compile(r'^ip\.geoip\.country in \{((?:\s*"[a-z0-9]{2}")+)\s*\}$')
+_ALL_COUNTRIES = 200
+
+
+def _enabled(rule):
+    return rule.get("enabled", True) is not False
+
+
+def _skips_rest_of_ruleset(rule):
+    return rule.get("action") == "skip" and (rule.get("action_parameters") or {}).get("ruleset") == "current"
+
+
+def is_block_rule(rule, list_name):
+    """Our Block rule: by ref, or exactly "ip.src in $<list>" (any parentheses and spacing)."""
+    if rule.get("ref") == BLOCK_RULE_REF:
+        return True
+    return (
+        _enabled(rule)
+        and rule.get("action") == "block"
+        and _norm(rule.get("expression")) == f"ip.src in ${list_name.lower()}"
+    )
+
+
+def is_skip_rule(rule, list_name):
+    """Our Skip rule, or a logged skip that matches (nearly) every visitor the same way.
+
+    A narrow skip (one monitor IP, one path) does not count: firewallEventsAdaptive would then
+    only see that traffic.
+    """
+    if rule.get("ref") == SKIP_RULE_REF:
+        return True
+    if not (_enabled(rule) and rule.get("action") == "skip"):
+        return False
+    if (rule.get("logging") or {}).get("enabled") is False:
+        return False  # an unlogged skip produces no firewall events
+    expression = _norm(rule.get("expression"))
+    name = list_name.lower()
+    if expression in ("true", f"not ip.src in ${name}", f"not (ip.src in ${name})"):
+        return True
+    match = _COUNTRY_SET.match(expression)
+    return bool(match) and len(set(re.findall(r'"([a-z0-9]{2})"', match.group(1)))) >= _ALL_COUNTRIES
+
+
+def missing_rules(ruleset, list_name):
+    """Return the rules (block, then skip) that the ruleset does not have yet."""
+    rules = (ruleset or {}).get("rules") or []
+    wanted = []
+    if not any(is_block_rule(rule, list_name) for rule in rules):
+        wanted.append(block_rule(list_name))
+    if not any(is_skip_rule(rule, list_name) for rule in rules):
+        wanted.append(skip_rule(list_name))
+    return wanted
+
+
+def block_rule_position(ruleset):
+    """Id of the first enabled rule that skips the rest of the ruleset, or None.
+
+    A new Block rule goes before it: after such a skip it would never run for the requests
+    the skip matches, and Active mode would list IPs that are never blocked.
+    """
+    for rule in (ruleset or {}).get("rules") or []:
+        if _enabled(rule) and _skips_rest_of_ruleset(rule) and rule.get("id"):
+            return rule["id"]
+    return None
+
+
+# --- AbuseIPDB ---------------------------------------------------------------------------
 
 def check_abuse_ip(ip: str, api_key: str):
     querystring = {
@@ -194,9 +536,13 @@ def check_abuse_ip(ip: str, api_key: str):
         "Accept": "application/json",
     }
 
-    response = requests.get(ABUSEIPDB_CHECK_URL, headers=headers, params=querystring, timeout=TIMEOUT)
+    try:
+        response = requests.get(ABUSEIPDB_CHECK_URL, headers=headers, params=querystring, timeout=TIMEOUT)
+    except requests.exceptions.InvalidHeader:
+        # The original message holds the key; never pass it on.
+        raise AbuseIPDBError("AbuseIPDB: the API key contains characters a header cannot carry") from None
     if response.status_code == 429:
-        raise AbuseIPDBRateLimited(response.text)
+        raise AbuseIPDBRateLimited("AbuseIPDB daily quota reached")
     if response.status_code == 200:
         data = response.json()["data"]
         return {
@@ -208,31 +554,20 @@ def check_abuse_ip(ip: str, api_key: str):
             "totalReports": data.get("totalReports", 0),
             "lastReportedAt": data.get("lastReportedAt", "Never"),
         }
-    return {"ip": ip, "error": f"{response.status_code}: {response.text}"}
+    detail = "; ".join(
+        str(e.get("detail", "")) for e in _errors(_payload(response)) if e.get("detail")
+    )
+    return {"ip": ip, "error": f"{response.status_code}: {detail or 'no detail'}", "status": response.status_code}
 
 
-def add_ips_to_list(account_id, list_id, new_ips, headers):
-    url = f"{CLOUDFLARE_API_URL}/accounts/{account_id}/rules/lists/{list_id}/items"
-    payload = [{"ip": ip} for ip in new_ips]
-
-    response = requests.post(url, headers=headers, json=payload, timeout=TIMEOUT)
-    if response.status_code != 200:
-        raise CloudflareApiError(f"Failed to add IPs: {response.status_code} {response.text}")
-    _LOGGER.info("Added %s to the Cloudflare list", ", ".join(new_ips))
-
-
-def get_security_level(zone_id, headers):
-    url = f"{CLOUDFLARE_API_URL}/zones/{zone_id}/settings/security_level"
-    response = requests.get(url, headers=headers, timeout=TIMEOUT)
-    response.raise_for_status()
-    return response.json().get("result", {}).get("value", "")
-
-
-def set_security_level(zone_id, headers, level):
-    url = f"{CLOUDFLARE_API_URL}/zones/{zone_id}/settings/security_level"
-    response = requests.patch(url, headers=headers, json={"value": level}, timeout=TIMEOUT)
-    if response.status_code != 200:
-        raise CloudflareApiError(
-            f"Failed to set security level to {level}: {response.status_code} {response.text}"
-        )
-    _LOGGER.info("Set Cloudflare security level to %s", level)
+def validate_abuseipdb_key(api_key):
+    """Return "ok", "rate_limited" or "invalid". One lookup, one unit of the daily quota."""
+    try:
+        result = check_abuse_ip("127.0.0.1", api_key)
+    except AbuseIPDBRateLimited:
+        return "rate_limited"  # the key is valid, the quota is used up
+    if "error" not in result:
+        return "ok"
+    if result.get("status") in (401, 403, 422):
+        return "invalid"
+    raise AbuseIPDBError(f"AbuseIPDB: {result['error']}")
