@@ -27,7 +27,7 @@ All access uses one scoped Cloudflare API token, which can access only the selec
 
 ## Requirements
 
-- **One or more Cloudflare zones**: domains on a [Cloudflare](https://dash.cloudflare.com/) account. The Free plan is sufficient: it allows five custom rules per zone and one IP list per account, and the integration requires two rules per zone and one list per account.
+- **One or more Cloudflare zones**: domains on a [Cloudflare](https://dash.cloudflare.com/) account. The Free plan is sufficient: it allows five custom rules per zone and one IP list per account, and the integration requires two rules per zone and one list per account. If a zone already uses all five rules, the integration can make room with your approval (see [When the zone has no room for the rules](#when-the-zone-has-no-room-for-the-rules)).
 - **An AbuseIPDB API key**: register at [AbuseIPDB](https://www.abuseipdb.com/) and create a key under **Account > API**. The free plan allows 1,000 lookups per day.
 - Home Assistant 2025.12 or later.
 
@@ -109,12 +109,37 @@ A Skip rule is required because Cloudflare firewall events record a request only
 
 Existing rules are handled as follows:
 
-- A Block rule is considered present when its expression is exactly `ip.src in $block_ips` (spacing, letter case and outer parentheses are ignored). A rule for another list, or with additional conditions, is not considered a match.
+- A Block rule is considered present when its expression is `ip.src in $block_ips` (spacing, letter case and outer parentheses are ignored), or when `ip.src in $block_ips` is one of the parts of the expression joined with `or`, for example `(http.user_agent contains "BadBot") or (ip.src in $block_ips)`. A rule for another list, or one that combines the list with `and`, is not considered a match.
 - A Skip rule is considered present when it is logged and matches (almost) every visitor: the rule above, `true`, or the "Skip by country" rule with every country listed, as described in older versions of this README. A narrow skip, for example for the IP address of an uptime monitor, is not considered a match, because the sensors would then see only that traffic. In that case the integration adds its own Skip rule at the end.
 - A new Block rule is placed **before** the first rule that skips the remaining custom rules. If it were placed after such a rule, it would never run for the requests that rule matches, and Active mode would list IP addresses that are never blocked.
-- If a zone has no custom rules at all, both rules are created in one step. Otherwise each missing rule is added individually; other rules are never modified.
+- If a zone has no custom rules at all, both rules are created in one step. Otherwise each missing rule is added individually. Other rules are never modified, except with your approval when the zone has no room for the rules (see below).
 
 **Creating the rules manually.** Create both rules as shown above before the setup. When both rules exist, the token requires only **Zone > Zone WAF > Read**: the integration writes rules only during setup and when a zone is added, never afterwards.
+
+### When the zone has no room for the rules
+
+Each Cloudflare plan allows a fixed number of custom rules per zone: **5 on the Free plan**, 20 on Pro, 100 on Business and 1,000 on Enterprise. If a zone already uses all of them, Cloudflare refuses a new rule with an error such as `exceeded the maximum number of rules in the phase http_request_firewall_custom: 6 out of 5`.
+
+Before adding a rule, the integration therefore reads the zone's custom rules and its plan, and compares the free slots with the number of rules it still needs (zero, one or two). If the plan is not known, a limit of 5 is assumed; if Cloudflare reports a different limit in such an error, the integration uses that limit and works out the rules again. If there is not enough room, the integration proposes a plan that uses the following methods, in this order, and only as many changes as are needed:
+
+1. **Extending an existing Block rule.** An enabled Block rule of yours is extended to `(<original expression>) or (ip.src in $block_ips)`, so it also blocks the listed IP addresses and the integration does not need its own Block rule. This saves one rule. Only a rule that runs before any rule that skips the remaining custom rules is used. Disabled rules, rules with a custom response or other action parameters, rules that use rate limiting, and rules of other phases or managed rulesets are never changed.
+2. **Merging adjacent rules.** Two rules that follow each other directly (with no rule, not even a disabled one, between them), are both enabled, and have the same action, the same action parameters and the same logging setting, are merged into one rule `(<A>) or (<B>)` with the description `A + B`, at the position of the first rule. Because the rules are adjacent and act in the same way, the merged rule behaves exactly as the two rules did. Each merge saves one rule. A merge is skipped if the merged expression would exceed Cloudflare's limit of 4,096 characters.
+3. **If this is still not enough,** nothing is changed. The dialog states how many rules are missing, lists the existing rules of the zone, and asks you to remove or combine that number of rules in the Cloudflare dashboard (for example a disabled rule or one that is no longer needed). The integration never deletes a rule of yours on its own.
+
+**Confirmation.** The plan is shown before anything is written, both during the initial setup and when a zone is added under **Configure**. The dialog lists every change for the zone, for example "The rule 'Block bad bots' will become: …" or "The rules 'Challenge admin' and 'Challenge login' will be merged into one rule …". The changes are made only after you select **I approve these changes**. If the rules were changed in Cloudflare in the meantime, the new plan is shown again instead of being applied. To cancel, close the dialog.
+
+**How the changes are made.** Each change is made to a single rule (a `PATCH` of that rule, or a `DELETE` of the second rule of a merge, after the merged rule has been written). The set of custom rules is never replaced as a whole. The token permissions are unchanged: **Zone > Zone WAF > Edit** covers these changes.
+
+**Restoring the original rules.** Before any change is made, the original of every rule that is changed (its ID, description, expression, action, action parameters, enabled state, logging setting and position) is saved in Home Assistant, separately for each zone. The action `cloudflare_abuse_monitor.restore_rules` restores them: extended rules get their original expression back, merged rules are split again into the original two rules at their original positions, and the Block and Skip rules of the integration are removed. A rule that was edited again after the integration changed it is left unchanged and reported in the response; its original remains saved.
+
+```yaml
+action: cloudflare_abuse_monitor.restore_rules
+data:
+  zone: example.com
+response_variable: result
+```
+
+Removing a zone under **Configure**, or deleting the integration, does **not** restore the rules automatically; the changed rules continue to block as before. The saved originals are kept, so the zone can be added again later and `restore_rules` called for it. After a restore the zone no longer has the integration's rules; to set them up again, enter the token again with **Reconfigure**.
 
 ### Replacing the token (reconfiguration and reauthentication)
 
@@ -129,7 +154,7 @@ Existing rules are handled as follows:
 
 **Zones.** The options form shows a checkbox for every zone the token can access (except zones monitored by another entry). The zones of this entry are selected.
 
-- **Selecting a zone** sets it up exactly as during the initial setup: the permission checks run, the IP list of its account is used (or created if the account has none yet), and the Block and Skip rules are created if they are missing.
+- **Selecting a zone** sets it up exactly as during the initial setup: the permission checks run, the IP list of its account is used (or created if the account has none yet), and the Block and Skip rules are created if they are missing. If the zone has no room for the rules, the proposed changes are shown for approval first.
 - **Deselecting a zone** removes its device and entities from Home Assistant. Its firewall rules and the IP list remain in Cloudflare unchanged, so blocking continues; remove them in the Cloudflare dashboard if they are no longer needed.
 - If Cloudflare cannot be reached, only the configured zones are listed. Zones can still be removed and the other options can still be changed.
 - At least one zone must remain selected. To stop monitoring entirely, delete the integration entry.
@@ -216,6 +241,7 @@ Every sensor also provides `next_update_in_seconds` and `next_update` (local tim
 | `cloudflare_abuse_monitor.block_ip` | Adds an IP address to the IP list of the zone's account. |
 | `cloudflare_abuse_monitor.unblock_ip` | Removes an IP address from the IP list of the zone's account. It is then never added again automatically, even in Active mode, until it is blocked again with `block_ip`. An IP address that is not in the list results in an error and changes nothing. |
 | `cloudflare_abuse_monitor.refresh` | Updates the entities immediately: of every zone, or of the zone specified. |
+| `cloudflare_abuse_monitor.restore_rules` | Restores the custom rules that the integration changed to make room for its rules, and removes the integration's Block and Skip rules (see [When the zone has no room for the rules](#when-the-zone-has-no-room-for-the-rules)). Requires `zone` or `device_id`. Returns a report of the restored, removed and skipped rules when called with a *response*. |
 
 `ip` accepts IPv4 and IPv6 addresses. Every action accepts the following optional fields to select the zone:
 

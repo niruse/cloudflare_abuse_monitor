@@ -3,7 +3,9 @@
 The token is checked and every zone it can read is listed with a checkbox. For each ticked
 zone every permission the integration needs is probed without changing anything, and the
 IP list (one per Cloudflare account, shared by its zones) and the two firewall rules are
-created when they are missing (never twice). The options add and remove zones the same way.
+created when they are missing (never twice). A zone at its custom-rule limit gets a plan that
+makes room (room.py), shown in rules_confirm and applied only once approved. The options add
+and remove zones the same way.
 """
 from __future__ import annotations
 
@@ -24,7 +26,7 @@ from homeassistant.helpers.selector import (
     TextSelectorType,
 )
 
-from . import api
+from . import api, room
 from .const import (
     CONF_ABUSEIPDB_TOKEN,
     CONF_API_TOKEN,
@@ -43,7 +45,7 @@ from .const import (
     ZONE_KEYS,
     zone_records,
 )
-from .coordinator import owned_level_store
+from .coordinator import owned_level_store, rules_store
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -64,12 +66,26 @@ class SetupError(Exception):
         self.placeholders = placeholders
 
 
+class NeedsApproval(Exception):
+    """The zone has no room for the rules; the plan that makes room waits for the user."""
+
+    def __init__(self, plan: room.RoomPlan, list_name: str) -> None:
+        super().__init__("approval required")
+        self.plan = plan
+        self.list_name = list_name
+
+
 def _placeholders(**extra: str) -> dict[str, str]:
     return {
         "token_url": api.CREATE_TOKEN_URL,
         "permissions": PERMISSION_LIST,
         "missing": "",
         "zone": "",
+        "count": "",
+        "limit": "",
+        "needed": "",
+        "short": "",
+        "rules": "",
         **extra,
     }
 
@@ -140,6 +156,12 @@ class ZoneSetupMixin:
         self._prepared: dict[str, dict[str, str]] = {}
         self._zone: dict | None = None
         self._error_step: tuple[str, Any] | None = None
+        # Making room for the rules: zone id -> Cloudflare plan, limit learned from a 400,
+        # signature of the plan the user approved; the plan waiting for approval.
+        self._zone_plans: dict[str, dict | None] = {}
+        self._rule_limits: dict[str, int] = {}
+        self._approved: dict[str, tuple] = {}
+        self._pending: tuple[dict, room.RoomPlan, str] | None = None
 
     async def _job(self, func, *args):
         return await self.hass.async_add_executor_job(func, *args)
@@ -253,28 +275,90 @@ class ZoneSetupMixin:
         return chosen
 
     async def _async_ensure_rules(self, headers, zone_id: str, ruleset: dict | None, list_name: str) -> None:
-        wanted = api.missing_rules(ruleset, list_name)
-        if not wanted:
-            return  # both rules exist: Zone WAF Read would have been enough
-        try:
-            if ruleset is None:
-                await self._job(api.create_custom_entrypoint, zone_id, wanted, headers)
-            else:
-                for rule in wanted:
-                    # Block goes before any rule that skips the rest of the custom rules,
-                    # or it would never run; Skip goes last.
-                    before = api.block_rule_position(ruleset) if rule["ref"] == api.BLOCK_RULE_REF else None
-                    await self._job(api.add_custom_rule, zone_id, ruleset["id"], rule, headers, before)
-        except api.CloudflareAuthError:
-            raise SetupError("missing_permissions", missing=PERMISSION["zone_waf"]) from None
-        except api.CloudflareApiError as err:
-            _LOGGER.warning("Could not create the firewall rules: %s", err)
-            raise SetupError("rule_create_failed") from None
+        """Add the missing rules; when the zone is at its rule limit, make room first.
+
+        Making room changes user rules, so it needs the user's approval (NeedsApproval shows the
+        plan; the queue runs again once it is approved). A limit Cloudflare reports in a 400
+        ("6 out of 5") is learned, and the plan is worked out once more with it.
+        """
+        for attempt in range(2):
+            if not api.missing_rules(ruleset, list_name):
+                return  # both rules exist: Zone WAF Read would have been enough
+            limit = await self._async_rule_limit(headers, zone_id, ruleset, list_name)
+            plan = room.build_plan(ruleset, list_name, limit)
+            if not plan.possible:
+                _LOGGER.warning(
+                    "Zone %s: %s of %s custom rules used; %s more rule(s) cannot be made room for",
+                    zone_id, plan.count, plan.limit, plan.short,
+                )
+                raise SetupError(
+                    "no_room", count=str(plan.count), limit=str(plan.limit),
+                    needed=str(len(plan.wanted)), short=str(plan.short), rules=room.describe_rules(plan),
+                )
+            if plan.changes and self._approved.get(zone_id) != plan.signature():
+                raise NeedsApproval(plan, list_name)
+            try:
+                await self._async_apply_plan(headers, zone_id, ruleset, plan, list_name)
+                return
+            except api.CloudflareAuthError:
+                raise SetupError("missing_permissions", missing=PERMISSION["zone_waf"]) from None
+            except api.CloudflareApiError as err:
+                learned = api.rule_limit_from_error(err)
+                if attempt or learned is None:
+                    _LOGGER.warning("Could not create the firewall rules: %s", err)
+                    raise SetupError("rule_create_failed") from None
+                _LOGGER.info("Zone %s allows %s custom rules; working out the rules again", zone_id, learned)
+                self._rule_limits[zone_id] = learned
+                try:
+                    ruleset = await self._job(api.get_custom_entrypoint, zone_id, headers)
+                except api.CloudflareAuthError:
+                    raise SetupError("missing_permissions", missing=PERMISSION["zone_waf"]) from None
+
+    async def _async_rule_limit(self, headers, zone_id: str, ruleset: dict | None, list_name: str) -> int:
+        """Custom rules the zone's plan allows: learned from a 400, else from the plan, else 5."""
+        rules = (ruleset or {}).get("rules") or []
+        if zone_id in self._rule_limits:
+            return max(self._rule_limits[zone_id], len(rules))
+        if len(rules) + len(api.missing_rules(ruleset, list_name)) <= api.FALLBACK_RULE_LIMIT:
+            return api.FALLBACK_RULE_LIMIT  # fits on every plan: no need to ask
+        if zone_id not in self._zone_plans:
+            try:
+                self._zone_plans[zone_id] = await self._job(api.fetch_zone_plan, zone_id, headers)
+            except api.CloudflareApiError as err:
+                _LOGGER.debug("Could not read the plan of zone %s: %s", zone_id, err)
+                self._zone_plans[zone_id] = None
+        limit = api.rule_limit_for_plan(self._zone_plans[zone_id]) or api.FALLBACK_RULE_LIMIT
+        # A zone never has more rules than its plan allows: an unknown plan is at least that.
+        return max(limit, len(rules))
+
+    async def _async_apply_plan(self, headers, zone_id: str, ruleset: dict | None,
+                                plan: room.RoomPlan, list_name: str) -> None:
+        if ruleset is None:
+            # Only for a zone with no entrypoint: a PUT replaces every rule in an existing one.
+            await self._job(api.create_custom_entrypoint, zone_id, plan.add, headers)
+            return
+        if plan.changes:
+            # The originals are saved before anything is changed, so restore_rules can undo it.
+            store = rules_store(self.hass, zone_id)
+            stored = await store.async_load() or {}
+            changes = list(stored.get("changes") or [])
+            changes += [change for change in room.store_changes(plan, list_name) if change not in changes]
+            await store.async_save({"ruleset_id": ruleset["id"], "changes": changes})
+            await self._job(room.apply_changes, zone_id, ruleset["id"], plan, headers)
+        after = room.rules_after(plan)
+        for rule in plan.add:
+            # Block goes before any rule that skips the rest of the custom rules,
+            # or it would never run; Skip goes last.
+            before = room.block_position(after) if rule["ref"] == api.BLOCK_RULE_REF else None
+            await self._job(api.add_custom_rule, zone_id, ruleset["id"], rule, headers, before)
 
     async def _async_run(self, coro_factory, step_id: str, schema, **extra_placeholders):
         """Run validation; on a SetupError re-show step_id with the error."""
         try:
             return await coro_factory(), None
+        except NeedsApproval as pending:
+            self._pending = (self._zone, pending.plan, pending.list_name)
+            return None, await self.async_step_rules_confirm()
         except SetupError as err:
             return None, self.async_show_form(
                 step_id=step_id,
@@ -304,6 +388,9 @@ class ZoneSetupMixin:
         step = first_step or self._error_step
         while self._queue:
             zone = self._queue[0]
+            self._zone = zone
+            if zone.get("plan") is not None:
+                self._zone_plans.setdefault(zone["id"], zone["plan"])  # /zones already said
             account_id = zone["account"]["id"]
             list_name, list_id = self._wanted_lists.get(zone["id"], (DEFAULT_LIST_NAME, None))
 
@@ -334,6 +421,28 @@ class ZoneSetupMixin:
         name = user_input["list_name"]
         self._wanted_lists[self._zone["id"]] = (name, names[name])
         return await self._async_process_queue(("list_select", schema))
+
+    async def async_step_rules_confirm(self, user_input=None):
+        """The zone is at its rule limit: show exactly what would change, apply only when approved."""
+        zone, plan, list_name = self._pending
+        schema = vol.Schema({vol.Required("approve", default=False): bool})
+        placeholders = {
+            "zone": zone["name"],
+            "count": str(plan.count),
+            "limit": str(plan.limit),
+            "needed": str(len(plan.wanted)),
+            "changes": room.describe_changes(plan, list_name),
+        }
+        if user_input is None or not user_input.get("approve"):
+            return self.async_show_form(
+                step_id="rules_confirm", data_schema=schema, description_placeholders=placeholders,
+                errors=None if user_input is None else {"base": "approval_required"},
+            )
+        # The rules are read again before anything is written; if they changed meanwhile, the
+        # new plan has another signature and is shown again instead of being applied.
+        self._approved[zone["id"]] = plan.signature()
+        self._pending = None
+        return await self._async_process_queue()
 
     async def _async_zones_ready(self):
         raise NotImplementedError

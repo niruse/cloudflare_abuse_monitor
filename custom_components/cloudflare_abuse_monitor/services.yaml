@@ -55,6 +55,20 @@ unblock_ip:
       selector:
         config_entry:
           integration: cloudflare_abuse_monitor
+restore_rules:
+  fields:
+    zone:
+      example: "example.com"
+      selector:
+        text:
+    device_id:
+      selector:
+        device:
+          integration: cloudflare_abuse_monitor
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: cloudflare_abuse_monitor
 refresh:
   fields:
     zone:

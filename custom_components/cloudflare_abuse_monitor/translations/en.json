@@ -36,6 +36,13 @@
         "data": {
           "api_token": "Cloudflare API token"
         }
+      },
+      "rules_confirm": {
+        "title": "Make room for the firewall rules",
+        "description": "Zone {zone} already has {count} of the {limit} custom rules that its Cloudflare plan allows, and the integration requires {needed} more. To make room, the following changes are proposed:\n{changes}\n\nNo rule changes what it does, and no rule is removed except the second rule of a merge, whose condition becomes part of the merged rule. Before any change is made, the original rules are saved in Home Assistant. They can be restored at any time with the action `cloudflare_abuse_monitor.restore_rules`, which also removes the rules of the integration.\n\nNothing is changed until you approve. To cancel, close this dialog.",
+        "data": {
+          "approve": "I approve these changes"
+        }
       }
     },
     "error": {
@@ -45,10 +52,12 @@
       "wrong_zone": "The token has no access to {zone}, which this entry monitors. Select the zone under Zone Resources, or remove it from this entry under Configure first.",
       "missing_permissions": "Zone {zone}: the token is missing the following permissions: {missing}. Edit the token in Cloudflare, add these permissions, and try again.",
       "list_create_failed": "Zone {zone}: Cloudflare did not allow the IP list block_ips to be created. Create the list under Manage Account > Configurations > Lists, and then try again.",
-      "rule_create_failed": "Zone {zone}: Cloudflare did not allow the firewall rules to be added. The Free plan allows five custom rules. Create the rules manually as described in the README, and then try again.",
+      "rule_create_failed": "Zone {zone}: Cloudflare did not allow the firewall rules to be added. Create the rules manually as described in the README, and then try again.",
       "invalid_abuseipdb_key": "AbuseIPDB rejected this API key. Verify that it was entered in full, without spaces or line breaks.",
       "connection_error": "Cloudflare or AbuseIPDB could not be reached. Please try again.",
-      "no_zones": "Select at least one zone."
+      "no_zones": "Select at least one zone.",
+      "no_room": "Zone {zone} has {count} custom rules, and its Cloudflare plan allows {limit}. The integration requires {needed} more, and {short} of them cannot be made available automatically: no suitable Block rule can be extended, and no further adjacent rules with the same action and settings can be merged. The existing rules are:\n{rules}\nRemove or combine {short} rule(s) in the Cloudflare dashboard under Security > Security rules > Custom rules, for example a disabled rule or one that is no longer needed, and then try again. No rule was changed.",
+      "approval_required": "Select the checkbox to approve these changes, or close this dialog to cancel."
     },
     "abort": {
       "already_configured": "Every zone that this token can access is already configured.",
@@ -60,7 +69,7 @@
     "step": {
       "init": {
         "title": "Cloudflare Abuse Monitor options",
-        "description": "Select the zones to be monitored. A newly selected zone is set up in the same way as during the initial setup: the permissions are verified, the IP list of its account is used, and the two firewall rules are created if they do not exist. When a zone is deselected, its device and entities are removed; its firewall rules and IP list remain in Cloudflare unchanged. The other options apply to every zone of this entry.",
+        "description": "Select the zones to be monitored. A newly selected zone is set up in the same way as during the initial setup: the permissions are verified, the IP list of its account is used, and the two firewall rules are created if they do not exist. If the zone has no room for the rules, the proposed changes are shown for approval first. When a zone is deselected, its device and entities are removed; its firewall rules and IP list remain in Cloudflare unchanged. The other options apply to every zone of this entry.",
         "data": {
           "zones": "Zones",
           "abuse_confidence_score": "AbuseIPDB confidence score classified as high risk (0-100)",
@@ -78,6 +87,13 @@
         "data": {
           "list_name": "IP list"
         }
+      },
+      "rules_confirm": {
+        "title": "Make room for the firewall rules",
+        "description": "Zone {zone} already has {count} of the {limit} custom rules that its Cloudflare plan allows, and the integration requires {needed} more. To make room, the following changes are proposed:\n{changes}\n\nNo rule changes what it does, and no rule is removed except the second rule of a merge, whose condition becomes part of the merged rule. Before any change is made, the original rules are saved in Home Assistant. They can be restored at any time with the action `cloudflare_abuse_monitor.restore_rules`, which also removes the rules of the integration.\n\nNothing is changed until you approve. To cancel, close this dialog.",
+        "data": {
+          "approve": "I approve these changes"
+        }
       }
     },
     "error": {
@@ -85,10 +101,12 @@
       "token_inactive": "This API token is disabled or has expired.",
       "missing_permissions": "Zone {zone}: the token is missing the following permissions: {missing}. Edit the token in Cloudflare, add these permissions, and try again.",
       "list_create_failed": "Zone {zone}: Cloudflare did not allow the IP list block_ips to be created. Create the list under Manage Account > Configurations > Lists, and then try again.",
-      "rule_create_failed": "Zone {zone}: Cloudflare did not allow the firewall rules to be added. The Free plan allows five custom rules. Create the rules manually as described in the README, and then try again.",
+      "rule_create_failed": "Zone {zone}: Cloudflare did not allow the firewall rules to be added. Create the rules manually as described in the README, and then try again.",
       "connection_error": "Cloudflare or AbuseIPDB could not be reached. Please try again.",
       "no_zones": "Select at least one zone.",
-      "zones_unavailable": "The zones of this token could not be retrieved from Cloudflare, so only the configured zones are listed. Zones can still be removed and the other options can still be changed."
+      "zones_unavailable": "The zones of this token could not be retrieved from Cloudflare, so only the configured zones are listed. Zones can still be removed and the other options can still be changed.",
+      "no_room": "Zone {zone} has {count} custom rules, and its Cloudflare plan allows {limit}. The integration requires {needed} more, and {short} of them cannot be made available automatically: no suitable Block rule can be extended, and no further adjacent rules with the same action and settings can be merged. The existing rules are:\n{rules}\nRemove or combine {short} rule(s) in the Cloudflare dashboard under Security > Security rules > Custom rules, for example a disabled rule or one that is no longer needed, and then try again. No rule was changed.",
+      "approval_required": "Select the checkbox to approve these changes, or close this dialog to cancel."
     }
   },
   "services": {
@@ -158,6 +176,24 @@
         }
       }
     },
+    "restore_rules": {
+      "name": "Restore firewall rules",
+      "description": "Restores the custom rules that the integration changed to make room for its rules (merged rules are split again), and removes the Block and Skip rules of the integration. A rule that was edited again after the integration changed it is left unchanged and reported.",
+      "fields": {
+        "zone": {
+          "name": "Zone",
+          "description": "The zone name, for example example.com. Either the zone or the zone device is required."
+        },
+        "device_id": {
+          "name": "Zone device",
+          "description": "The device of the zone, as an alternative to the zone name."
+        },
+        "config_entry_id": {
+          "name": "Configuration entry",
+          "description": "Restricts the action to one configuration entry (one Cloudflare API token). Optional."
+        }
+      }
+    },
     "refresh": {
       "name": "Refresh",
       "description": "Updates the sensors immediately instead of at the next update interval. Without a zone, every zone is updated.",
@@ -186,6 +222,9 @@
     },
     "choose_zone": {
       "message": "The configured zones use different IP lists. Specify the zone or the zone device."
+    },
+    "restore_needs_zone": {
+      "message": "Specify the zone or the zone device whose firewall rules are to be restored."
     }
   }
 }

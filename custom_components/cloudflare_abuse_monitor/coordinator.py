@@ -19,7 +19,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from . import api
+from . import api, room
 from .const import (
     CHECKED_IPS_FILENAME,
     CONF_ABUSEIPDB_TOKEN,
@@ -54,6 +54,16 @@ def owned_level_store(hass: HomeAssistant, entry_id: str, zone: dict | None = No
     if zone is None or zone.get(CONF_LEGACY_STORAGE):
         return Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry_id}")
     return Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry_id}.{zone['zone_id']}")
+
+
+def rules_store(hass: HomeAssistant, zone_id: str) -> Store:
+    """Per zone: the original of every custom rule the integration changed to make room.
+
+    Named after the zone only, not the entry: the changed rules stay in Cloudflare when the zone
+    or the entry is removed, so the originals stay too, and restore_rules still works after the
+    zone is added again. {"ruleset_id": ..., "changes": [...]} (see room.store_changes).
+    """
+    return Store(hass, STORAGE_VERSION, f"{DOMAIN}.rules.{zone_id}")
 
 
 class ZonePacer:
@@ -404,6 +414,22 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._async_save_state(allowed_ips=[*state["allowed_ips"], ip])
         elif not allowed and ip in state["allowed_ips"]:
             await self._async_save_state(allowed_ips=[a for a in state["allowed_ips"] if a != ip])
+
+    async def async_restore_rules(self) -> dict[str, Any]:
+        """Undo the rule changes made to make room, and remove the integration's own rules."""
+        store = rules_store(self.hass, self.zone_id)
+        stored = await store.async_load() or {}
+        report = await self._call(room.restore_rules, self.zone_id, stored, self.headers)
+        remaining = report.pop("remaining")
+        if remaining:
+            await store.async_save({**stored, "changes": remaining})
+            _LOGGER.warning(
+                "Zone %s: these rules were changed after the integration changed them and were "
+                "left as they are: %s", self.zone["zone_name"], ", ".join(report["skipped"]),
+            )
+        else:
+            await store.async_remove()
+        return report
 
     async def async_block_ip(self, ip: str) -> None:
         data = self.zone

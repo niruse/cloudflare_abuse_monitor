@@ -412,16 +412,64 @@ def create_custom_entrypoint(zone_id, rules, headers):
     _call("PUT", url, headers, "Create custom rules", json={"rules": rules})
 
 
-def add_custom_rule(zone_id, ruleset_id, rule, headers, before=None):
+def add_custom_rule(zone_id, ruleset_id, rule, headers, before=None, position=None):
     """Add one rule to an existing ruleset, leaving the other rules alone.
 
-    Appended at the end, or placed right before the rule whose id is ``before``.
+    Appended at the end, placed right before the rule whose id is ``before``, or at
+    ``position`` ({"after": id} or {"index": n}, as Cloudflare takes it).
     """
     url = f"{CLOUDFLARE_API_URL}/zones/{zone_id}/rulesets/{ruleset_id}/rules"
     body = dict(rule)
     if before:
         body["position"] = {"before": before}
+    elif position:
+        body["position"] = dict(position)
     _call("POST", url, headers, "Add custom rule", json=body)
+
+
+def update_custom_rule(zone_id, ruleset_id, rule_id, rule, headers):
+    """Change one rule in place (PATCH); every other rule of the ruleset stays as it is."""
+    url = f"{CLOUDFLARE_API_URL}/zones/{zone_id}/rulesets/{ruleset_id}/rules/{rule_id}"
+    _call("PATCH", url, headers, "Update custom rule", json=dict(rule))
+
+
+def delete_custom_rule(zone_id, ruleset_id, rule_id, headers):
+    url = f"{CLOUDFLARE_API_URL}/zones/{zone_id}/rulesets/{ruleset_id}/rules/{rule_id}"
+    _call("DELETE", url, headers, "Delete custom rule")
+
+
+# --- the plan's limit on custom rules ------------------------------------------------------
+
+# Custom rules per zone by plan (Cloudflare documentation); an unknown plan is assumed Free.
+PLAN_RULE_LIMITS = {"free": 5, "pro": 20, "business": 100, "enterprise": 1000}
+FALLBACK_RULE_LIMIT = PLAN_RULE_LIMITS["free"]
+_LIMIT_TEXT = re.compile(r"(\d+)\s+out\s+of\s+(\d+)", re.I)
+
+
+def fetch_zone_plan(zone_id, headers):
+    """Return the zone's plan as Cloudflare describes it ({"legacy_id": "free", "name": ...})."""
+    payload = _call("GET", f"{CLOUDFLARE_ZONES_URL}/{zone_id}", headers, "Zone")
+    return (payload.get("result") or {}).get("plan") or {}
+
+
+def rule_limit_for_plan(plan):
+    """Custom rules allowed by a zone plan, or None when the plan is not recognised."""
+    if not isinstance(plan, dict):
+        return None
+    legacy = str(plan.get("legacy_id") or "").lower()
+    if legacy in PLAN_RULE_LIMITS:
+        return PLAN_RULE_LIMITS[legacy]
+    name = str(plan.get("name") or "").lower()
+    for key in ("enterprise", "business", "pro", "free"):
+        if key in name.split():
+            return PLAN_RULE_LIMITS[key]
+    return None
+
+
+def rule_limit_from_error(error):
+    """The limit in "exceeded the maximum number of rules in the phase ...: 6 out of 5", or None."""
+    match = _LIMIT_TEXT.search(str(error))
+    return int(match.group(2)) if match else None
 
 
 def block_rule(list_name):
@@ -448,21 +496,49 @@ def skip_rule(list_name):
     }
 
 
-def _norm(expression):
+def normalize_expression(expression):
     """Lower case, single spaces, outer parentheses removed: "(ip.src  in $X)" -> "ip.src in $x"."""
     text = re.sub(r"\s+", " ", expression or "").strip().lower()
-    while text.startswith("(") and text.endswith(")") and _balanced(text[1:-1]):
+    while text.startswith("(") and text.endswith(")") and balanced(text[1:-1]):
         text = text[1:-1].strip()
     return text
 
 
-def _balanced(text):
+_norm = normalize_expression
+
+
+def balanced(text):
     depth = 0
     for char in text:
         depth += {"(": 1, ")": -1}.get(char, 0)
         if depth < 0:
             return False
     return depth == 0
+
+
+def or_parts(expression):
+    """Split an expression at its top-level ``or`` / ``||`` (outside brackets and strings)."""
+    text = normalize_expression(expression)
+    parts, depth, start, i, quoted = [], 0, 0, 0, False
+    while i < len(text):
+        char = text[i]
+        if char == '"' and (i == 0 or text[i - 1] != "\\"):
+            quoted = not quoted
+        elif not quoted:
+            if char in "({[":
+                depth += 1
+            elif char in ")}]":
+                depth -= 1
+            elif depth == 0:
+                token = next((t for t in (" or ", " || ") if text.startswith(t, i)), None)
+                if token:
+                    parts.append(text[start:i])
+                    i += len(token)
+                    start = i
+                    continue
+        i += 1
+    parts.append(text[start:])
+    return [normalize_expression(part) for part in parts]
 
 
 # The README up to v1.5 asked for a "Skip by country" rule listing every country.
@@ -474,19 +550,24 @@ def _enabled(rule):
     return rule.get("enabled", True) is not False
 
 
-def _skips_rest_of_ruleset(rule):
+def skips_rest_of_ruleset(rule):
     return rule.get("action") == "skip" and (rule.get("action_parameters") or {}).get("ruleset") == "current"
 
 
+_skips_rest_of_ruleset = skips_rest_of_ruleset
+
+
 def is_block_rule(rule, list_name):
-    """Our Block rule: by ref, or exactly "ip.src in $<list>" (any parentheses and spacing)."""
+    """Our Block rule: by ref, or "ip.src in $<list>" (any parentheses and spacing).
+
+    Also a Block rule extended to make room, "(<original>) or (ip.src in $<list>)": the list
+    test is one of the expression's top-level "or" parts.
+    """
     if rule.get("ref") == BLOCK_RULE_REF:
         return True
-    return (
-        _enabled(rule)
-        and rule.get("action") == "block"
-        and _norm(rule.get("expression")) == f"ip.src in ${list_name.lower()}"
-    )
+    if not (_enabled(rule) and rule.get("action") == "block"):
+        return False
+    return f"ip.src in ${list_name.lower()}" in or_parts(rule.get("expression"))
 
 
 def is_skip_rule(rule, list_name):

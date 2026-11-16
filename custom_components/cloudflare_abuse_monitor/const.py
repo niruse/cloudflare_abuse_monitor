@@ -28,6 +28,7 @@ SERVICE_CHECK_IP = "check_ip"
 SERVICE_BLOCK_IP = "block_ip"
 SERVICE_UNBLOCK_IP = "unblock_ip"
 SERVICE_REFRESH = "refresh"
+SERVICE_RESTORE_RULES = "restore_rules"
 
 # v1.7: one entry per token, any number of zones. Each zone is a dict in data[CONF_ZONES]
 # (a list, so diagnostics can redact it): zone_id, zone_name, account_id, list_name, list_id,

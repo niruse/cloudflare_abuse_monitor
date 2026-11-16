@@ -42,6 +42,7 @@ def flow_api_mocks():
         "get_security_level", "set_security_level", "fetch_ip_lists", "create_ip_list",
         "update_list_description", "get_custom_entrypoint", "create_custom_entrypoint",
         "add_custom_rule", "validate_abuseipdb_key",
+        "fetch_zone_plan", "update_custom_rule", "delete_custom_rule",
     ]
     patches = {name: patch(f"{API}.{name}") for name in names}
     mocks = {name: p.start() for name, p in patches.items()}
@@ -55,6 +56,7 @@ def flow_api_mocks():
     m.create_ip_list.return_value = NEW_LIST
     m.get_custom_entrypoint.return_value = None
     m.validate_abuseipdb_key.return_value = "ok"
+    m.fetch_zone_plan.return_value = {"legacy_id": "free", "name": "Free Website"}
     try:
         yield m
     finally:

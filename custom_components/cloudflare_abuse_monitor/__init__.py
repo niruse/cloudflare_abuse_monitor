@@ -27,6 +27,7 @@ from .const import (
     SERVICE_BLOCK_IP,
     SERVICE_CHECK_IP,
     SERVICE_REFRESH,
+    SERVICE_RESTORE_RULES,
     SERVICE_UNBLOCK_IP,
     ZONE_KEYS,
     zone_records,
@@ -142,12 +143,25 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         for coordinator in _zones_for(hass, call):
             await coordinator.async_refresh()
 
+    async def restore_rules(call: ServiceCall):
+        # Changes Cloudflare rules: the zone must be named, never "every zone" by default.
+        if not (call.data.get(ATTR_ZONE) or call.data.get(ATTR_DEVICE_ID)):
+            raise ServiceValidationError(translation_domain=DOMAIN, translation_key="restore_needs_zone")
+        reports = {}
+        for coordinator in _zones_for(hass, call):
+            reports[coordinator.zone["zone_name"]] = await guarded(coordinator.async_restore_rules())
+        return {"zones": reports}
+
     hass.services.async_register(
         DOMAIN, SERVICE_CHECK_IP, check_ip, schema=IP_SCHEMA, supports_response=SupportsResponse.ONLY
     )
     hass.services.async_register(DOMAIN, SERVICE_BLOCK_IP, block_ip, schema=IP_SCHEMA)
     hass.services.async_register(DOMAIN, SERVICE_UNBLOCK_IP, unblock_ip, schema=IP_SCHEMA)
     hass.services.async_register(DOMAIN, SERVICE_REFRESH, refresh, schema=ENTRY_SCHEMA)
+    hass.services.async_register(
+        DOMAIN, SERVICE_RESTORE_RULES, restore_rules, schema=ENTRY_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
     return True
 
 
