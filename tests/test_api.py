@@ -23,17 +23,17 @@ def test_bearer_headers_only():
 
 def test_create_token_url_format():
     url = urlparse(api.CREATE_TOKEN_URL)
-    assert (url.scheme, url.netloc, url.path) == ("https", "dash.cloudflare.com", "/profile/api-tokens")
+    assert (url.scheme, url.netloc, url.path) == ("https", "dash.cloudflare.com", "/")
     query = parse_qs(url.query)
-    assert query["accountId"] == ["*"] and query["zoneId"] == ["all"]
+    assert query["to"] == ["/:account/api-tokens"]
     assert query["name"] == ["Home Assistant Abuse Monitor"]
     keys = json.loads(query["permissionGroupKeys"][0])
     assert keys == [
-        {"key": "zone", "type": "read"},
-        {"key": "analytics", "type": "read"},
-        {"key": "zone_settings", "type": "edit"},
-        {"key": "zone_waf", "type": "edit"},
-        {"key": "account_filter_lists", "type": "edit"},
+        {"key": "c8fed203ed3043cba015a93ad1616f1f", "type": "read"},   # Zone Read
+        {"key": "9c88f9c5bce24ce7af9a958ba9c504db", "type": "read"},   # Analytics Read
+        {"key": "3030687196b94b638145a3953da2b699", "type": "edit"},   # Zone Settings
+        {"key": "fb6778dc191143babbfaa57993f1d275", "type": "edit"},   # Zone WAF
+        {"key": "2edbf20661fd4661b0fe10e9e12f485c", "type": "edit"},   # Account Filter Lists
     ]
     assert " " not in api.CREATE_TOKEN_URL and '"' not in api.CREATE_TOKEN_URL
 

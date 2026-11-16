@@ -37,22 +37,30 @@ TOKEN_PERMISSIONS = (
     ("account_filter_lists", "edit", "Account > Account Filter Lists > Edit"),
 )
 TOKEN_NAME = "Home Assistant Abuse Monitor"
+# Cloudflare's permission group ids. The account-token link takes ids, so every row is pre-filled;
+# the user-token link takes only short keys, and Cloudflare has no documented key for Zone WAF or
+# Account Filter Lists (checked live 2026-11-16: the short-key link dropped Account Filter Lists).
+PERMISSION_IDS = {
+    "zone": "c8fed203ed3043cba015a93ad1616f1f",                  # Zone Read
+    "analytics": "9c88f9c5bce24ce7af9a958ba9c504db",             # Analytics Read
+    "zone_settings": "3030687196b94b638145a3953da2b699",         # Zone Settings Write
+    "zone_waf": "fb6778dc191143babbfaa57993f1d275",              # Zone WAF Write
+    "account_filter_lists": "2edbf20661fd4661b0fe10e9e12f485c",  # Account Filter Lists Write
+}
 
 
 def _create_token_url():
-    keys = [{"key": key, "type": kind} for key, kind, _ in TOKEN_PERMISSIONS]
+    keys = [{"key": PERMISSION_IDS[key], "type": kind} for key, kind, _ in TOKEN_PERMISSIONS]
     return (
-        "https://dash.cloudflare.com/profile/api-tokens"
-        f"?permissionGroupKeys={quote(json.dumps(keys, separators=(',', ':')), safe='')}"
-        f"&accountId={quote('*', safe='')}&zoneId=all&name={quote(TOKEN_NAME, safe='')}"
+        "https://dash.cloudflare.com/?to=/:account/api-tokens"
+        f"&permissionGroupKeys={quote(json.dumps(keys, separators=(',', ':')), safe='')}"
+        f"&name={quote(TOKEN_NAME, safe='')}"
     )
 
 
-# Opens the dashboard's "create token" page with the permissions pre-filled. Cloudflare
-# documents zone, analytics and zone_settings as keys; zone_waf and account_filter_lists are
-# not in its published list, and the dashboard drops an unknown key silently, so the setup
-# text asks the user to check all five rows. accountId/zoneId are required by the URL format
-# (all accounts, all zones); the setup text tells the user to narrow both.
+# Opens the dashboard's "create account API token" page (the account is picked there) with all
+# five permissions pre-filled by id; the setup text asks the user to narrow Zone Resources to
+# this zone. An account-owned token is checked with /accounts/{id}/tokens/verify.
 CREATE_TOKEN_URL = _create_token_url()
 
 # Only these characters can be sent in a header. Anything else (a pasted newline, a tab)

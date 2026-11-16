@@ -51,8 +51,8 @@ Everything happens with one scoped Cloudflare API token that can touch only your
 ## Setup
 
 1. Go to **Settings > Devices & services > + Add integration** and search for **Cloudflare Abuse Monitor**.
-2. Click **Create a Cloudflare API token** in the form. It opens Cloudflare's "create token" page with the token name and permissions pre-filled.
-3. **Check that all five permission rows below are there.** Cloudflare documents the keys for the first three rows; if a row is missing when the page opens, add it with **+ Add more**.
+2. Click **Create a Cloudflare API token** in the form. It opens Cloudflare's "create account API token" page (pick your account if asked) with the token name and all five permissions pre-filled.
+3. **Check that the five permission rows below are there** (if one is missing, add it with **+ Add more**), and under **Zone Resources** choose only your zone.
 
    | Permission | Why the integration needs it |
    |---|---|
@@ -265,7 +265,7 @@ cards:
 
 | Message in the setup form | What to do |
 |---|---|
-| *The token is missing: …* | Edit the token in Cloudflare (**My Profile > API Tokens > Edit**) and add each permission named, then submit again. Analytics Read, Zone Settings Edit, Zone WAF Edit and Account Filter Lists Edit are the usual ones, because the link may not pre-fill the last two. |
+| *The token is missing: …* | Edit the token in Cloudflare (**My Profile > API Tokens > Edit**) and add each permission named, then submit again. Analytics Read, Zone Settings Edit, Zone WAF Edit and Account Filter Lists Edit are the usual ones, in case a row was removed when the token was made. |
 | *Cloudflare does not accept this API token* | The token was not pasted whole (no spaces or line breaks), was deleted, or is an account token for another account. |
 | *This API token is disabled or expired* | Re-enable it, or create a new one. |
 | *The token cannot read any zone* | Add **Zone > Zone > Read** and choose your zone under **Zone Resources**. |
