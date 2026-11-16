@@ -21,6 +21,7 @@ from homeassistant.util import dt as dt_util
 
 from . import api, room
 from .const import (
+    CONF_ZONE_OPTIONS,
     CHECKED_IPS_FILENAME,
     CONF_ABUSEIPDB_TOKEN,
     CONF_API_TOKEN,
@@ -164,6 +165,11 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return [peer for peer in self.peers if peer.list_key == self.list_key]
 
     def option(self, key: str, default):
+        """A setting of this zone: its own (options' zone_options, set per zone), else the entry's (before v1.9
+        the options were the same for every zone), else the setup's, else ``default``."""
+        own = (self.entry.options.get(CONF_ZONE_OPTIONS) or {}).get(self.zone_id) or {}
+        if key in own:
+            return own[key]
         return self.entry.options.get(key, self.entry.data.get(key, default))
 
     async def _job(self, func, *args):

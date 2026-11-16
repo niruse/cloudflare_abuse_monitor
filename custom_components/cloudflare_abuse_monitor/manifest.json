@@ -9,5 +9,5 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/niruse/cloudflare_abuse_monitor/issues",
   "requirements": [],
-  "version": "1.8"
+  "version": "1.9"
 }

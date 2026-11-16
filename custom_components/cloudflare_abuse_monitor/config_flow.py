@@ -32,6 +32,7 @@ from .const import (
     CONF_API_TOKEN,
     CONF_RECHECK_ENABLED,
     CONF_UID_PREFIX,
+    CONF_ZONE_OPTIONS,
     CONF_ZONES,
     DEFAULT_ABUSE_CONFIDENCE_SCORE,
     DEFAULT_LIST_NAME,
@@ -629,14 +630,17 @@ class CloudflareAbuseMonitorConfigFlow(ZoneSetupMixin, config_entries.ConfigFlow
 
 
 class CloudflareAbuseMonitorOptionsFlowHandler(ZoneSetupMixin, config_entries.OptionsFlow):
-    """The zone checkboxes plus the options; they apply to every zone of the entry."""
+    """The zone checkboxes, then the settings of each zone in turn (Nir, 11-17: per domain): a zone's settings
+    apply to that zone only (options' zone_options, by zone id)."""
 
     def __init__(self) -> None:
         self._init_zone_setup()
         self._choices: list[dict] | None = None
-        self._options: dict[str, Any] = {}
         self._selected: list[str] = []
         self._lookup_error: str | None = None
+        self._records: list[dict] = []
+        self._pending: list[dict] = []
+        self._zone_options: dict[str, dict] = {}
 
     async def _async_zone_choices(self) -> list[dict]:
         """The zones the token sees now (minus other entries' zones) plus the configured ones."""
@@ -665,11 +669,16 @@ class CloudflareAbuseMonitorOptionsFlowHandler(ZoneSetupMixin, config_entries.Op
         return self._choices
 
     def _schema(self, values: dict) -> vol.Schema:
+        return vol.Schema({
+            vol.Required(CONF_ZONES, default=values.get(CONF_ZONES, [])): _zone_selector(self._choices or []),
+        })
+
+    @staticmethod
+    def _settings_schema(values: dict) -> vol.Schema:
         def current(key, default):
             return values.get(key, default)
 
         return vol.Schema({
-            vol.Required(CONF_ZONES, default=current(CONF_ZONES, [])): _zone_selector(self._choices or []),
             vol.Required("abuse_confidence_score", default=current("abuse_confidence_score", DEFAULT_ABUSE_CONFIDENCE_SCORE)): SCORE,
             vol.Required("mode", default=current("mode", MODE_MONITOR)): vol.In([MODE_ACTIVE, MODE_MONITOR]),
             vol.Required(CONF_RECHECK_ENABLED, default=current(CONF_RECHECK_ENABLED, True)): bool,
@@ -702,7 +711,6 @@ class CloudflareAbuseMonitorOptionsFlowHandler(ZoneSetupMixin, config_entries.Op
                 description_placeholders=_placeholders(),
             )
         self._selected = selected
-        self._options = {key: value for key, value in user_input.items() if key != CONF_ZONES}
 
         # Zones that stay keep their list; a new zone of a known account uses that account's list.
         for record in records:
@@ -715,22 +723,56 @@ class CloudflareAbuseMonitorOptionsFlowHandler(ZoneSetupMixin, config_entries.Op
         return await self._async_process_queue()
 
     async def _async_zones_ready(self):
+        """The zones are ready: their settings next, one zone at a time."""
         entry = self.config_entry
         records = list(entry.data.get(CONF_ZONES) or [])
         kept = [record for record in records if record["zone_id"] in self._selected]
         added = [_new_record(zone, self._prepared[zone["id"]]) for zone in self._choices
                  if zone["id"] in self._prepared]
+        self._records = kept + added
+        self._pending = list(self._records)
+        self._zone_options = {}
+        return await self.async_step_zone_settings()
+
+    def _zone_defaults(self, zone_id: str) -> dict:
+        """A zone's settings as they are: its own, else the entry's from before v1.9 (the same for every zone)."""
+        entry = self.config_entry
+        legacy = {key: value for key, value in {**entry.data, **entry.options}.items()
+                  if key not in (CONF_ZONES, CONF_ZONE_OPTIONS)}
+        return {**legacy, **((entry.options.get(CONF_ZONE_OPTIONS) or {}).get(zone_id) or {})}
+
+    async def async_step_zone_settings(self, user_input=None):
+        """The settings of one zone (each zone has its own, Nir 11-17)."""
+        record = self._pending[0]
+        if user_input is not None:
+            self._zone_options[record["zone_id"]] = dict(user_input)
+            self._pending.pop(0)
+            if self._pending:
+                return await self.async_step_zone_settings()
+            return await self._async_save()
+        number = len(self._records) - len(self._pending) + 1
+        return self.async_show_form(
+            step_id="zone_settings",
+            data_schema=self._settings_schema(self._zone_defaults(record["zone_id"])),
+            description_placeholders={**_placeholders(), "zone": record["zone_name"], "number": str(number),
+                                      "total": str(len(self._records))},
+        )
+
+    async def _async_save(self):
+        entry = self.config_entry
+        records = list(entry.data.get(CONF_ZONES) or [])
         for record in records:
             if record["zone_id"] not in self._selected:
                 # Its device and entities go on reload; its rules and list stay in Cloudflare.
                 await owned_level_store(self.hass, entry.entry_id, record).async_remove()
-        new_records = kept + added
+        new_records = self._records
         # A title the user typed stays; the automatic one follows the zones.
         title = _title(new_records) if records and entry.title == _title(records) else entry.title
+        options = {CONF_ZONE_OPTIONS: self._zone_options}
         self.hass.config_entries.async_update_entry(
             entry,
             title=title,
             data={**entry.data, CONF_ZONES: new_records},
-            options=self._options,
+            options=options,
         )
-        return self.async_create_entry(title="", data=self._options)
+        return self.async_create_entry(title="", data=options)

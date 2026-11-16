@@ -34,6 +34,7 @@ SERVICE_RESTORE_RULES = "restore_rules"
 # (a list, so diagnostics can redact it): zone_id, zone_name, account_id, list_name, list_id,
 # uid_prefix and, for the zone moved from a v1.6 entry, legacy_storage.
 CONF_ZONES = "zones"
+CONF_ZONE_OPTIONS = "zone_options"  # options: zone id -> the settings of that zone (Nir, 11-17)
 ZONE_KEYS = ("zone_id", "zone_name", "account_id", "list_name", "list_id")
 CONF_LEGACY_STORAGE = "legacy_storage"
 

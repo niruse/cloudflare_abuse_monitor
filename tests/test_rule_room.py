@@ -13,6 +13,7 @@ from homeassistant.exceptions import ServiceValidationError
 from custom_components.cloudflare_abuse_monitor import api, room
 from custom_components.cloudflare_abuse_monitor.coordinator import rules_store
 
+from .conftest import zone_settings
 from .conftest import DOMAIN, LIST_ID, ZONE_ID
 from .test_api import HEADERS, response
 from .test_config_flow import NEW_LIST, RULESET_ID, SETUP, USER_INPUT, ZONE, flow_api_mocks
@@ -435,11 +436,8 @@ async def test_options_add_a_full_zone_with_confirmation(hass, live_api, config_
     live_api.delete_custom_rule.side_effect = fake.delete
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(result["flow_id"], {
-        "zones": [ZONE_A["id"], ZONE_B["id"]], "abuse_confidence_score": 80, "mode": "Monitor",
-        "recheck_enabled": True, "recheck_days": 7, "under_attack_mode": False,
-        "under_attack_request_threshold": 15000, "scan_interval_minutes": 5,
-    })
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"zones": [ZONE_A["id"], ZONE_B["id"]]})
+    result = await zone_settings(hass, result, {"abuse_confidence_score": 80, "mode": "Monitor", "recheck_enabled": True, "recheck_days": 7, "under_attack_mode": False, "under_attack_request_threshold": 15000, "scan_interval_minutes": 5})
     assert result["type"] is FlowResultType.FORM and result["step_id"] == "rules_confirm"
     assert result["description_placeholders"]["zone"] == "example.net"
     assert fake.writes == []
@@ -449,6 +447,7 @@ async def test_options_add_a_full_zone_with_confirmation(hass, live_api, config_
     assert result["errors"] == {"base": "approval_required"} and fake.writes == []
 
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"approve": True})
+    result = await zone_settings(hass, result)
     await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert [z["zone_id"] for z in entry.data["zones"]] == [ZONE_A["id"], ZONE_B["id"]]
@@ -544,11 +543,8 @@ async def test_zone_removal_does_not_restore(hass, live_api, config_dir, cf, has
     entry = await load(hass, make_v17_entry(hass, record(ZONE_A, LIST_ID), record(ZONE_B, LIST_ID)))
     live_api.fetch_zones.return_value = [ZONE_A, ZONE_B]
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(result["flow_id"], {
-        "zones": [ZONE_B["id"]], "abuse_confidence_score": 80, "mode": "Monitor",
-        "recheck_enabled": True, "recheck_days": 7, "under_attack_mode": False,
-        "under_attack_request_threshold": 15000, "scan_interval_minutes": 5,
-    })
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"zones": [ZONE_B["id"]]})
+    result = await zone_settings(hass, result, {"abuse_confidence_score": 80, "mode": "Monitor", "recheck_enabled": True, "recheck_days": 7, "under_attack_mode": False, "under_attack_request_threshold": 15000, "scan_interval_minutes": 5})
     await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY
     live_api.update_custom_rule.assert_not_called()

@@ -69,16 +69,9 @@
     "step": {
       "init": {
         "title": "Cloudflare Abuse Monitor options",
-        "description": "Select the zones to be monitored. A newly selected zone is set up in the same way as during the initial setup: the permissions are verified, the IP list of its account is used, and the two firewall rules are created if they do not exist. If the zone has no room for the rules, the proposed changes are shown for approval first. When a zone is deselected, its device and entities are removed; its firewall rules and IP list remain in Cloudflare unchanged. The other options apply to every zone of this entry.",
+        "description": "Select the zones to be monitored. A newly selected zone is set up in the same way as during the initial setup: the permissions are verified, the IP list of its account is used, and the two firewall rules are created if they do not exist. If the zone has no room for the rules, the proposed changes are shown for approval first. When a zone is deselected, its device and entities are removed; its firewall rules and IP list remain in Cloudflare unchanged. The settings of each selected zone are entered in the next steps, one zone at a time.",
         "data": {
-          "zones": "Zones",
-          "abuse_confidence_score": "AbuseIPDB confidence score classified as high risk (0-100)",
-          "mode": "Mode (Monitor only reports; Active adds high-risk IP addresses to the IP list)",
-          "recheck_enabled": "Check IP addresses again after a number of days",
-          "recheck_days": "Days before an IP address is checked again",
-          "under_attack_mode": "Enable Under Attack Mode automatically on a traffic spike",
-          "under_attack_request_threshold": "Requests per update interval classified as a traffic spike",
-          "scan_interval_minutes": "Update interval (minutes)"
+          "zones": "Zones"
         }
       },
       "list_select": {
@@ -93,6 +86,19 @@
         "description": "Zone {zone} already has {count} of the {limit} custom rules that its Cloudflare plan allows, and the integration requires {needed} more. To make room, the following changes are proposed:\n{changes}\n\nNo rule changes what it does, and no rule is removed except the second rule of a merge, whose condition becomes part of the merged rule. Before any change is made, the original rules are saved in Home Assistant. They can be restored at any time with the action `cloudflare_abuse_monitor.restore_rules`, which also removes the rules of the integration.\n\nNothing is changed until you approve. To cancel, close this dialog.",
         "data": {
           "approve": "I approve these changes"
+        }
+      },
+      "zone_settings": {
+        "title": "Settings for {zone}",
+        "description": "Zone {number} of {total}: {zone}. These settings apply to this zone only.",
+        "data": {
+          "abuse_confidence_score": "AbuseIPDB confidence score classified as high risk (0-100)",
+          "mode": "Mode (Monitor only reports; Active adds high-risk IP addresses to the IP list)",
+          "recheck_enabled": "Check IP addresses again after a number of days",
+          "recheck_days": "Days before an IP address is checked again",
+          "under_attack_mode": "Enable Under Attack Mode automatically on a traffic spike",
+          "under_attack_request_threshold": "Requests per update interval classified as a traffic spike",
+          "scan_interval_minutes": "Update interval (minutes)"
         }
       }
     },

@@ -19,6 +19,7 @@ from custom_components.cloudflare_abuse_monitor import api
 from custom_components.cloudflare_abuse_monitor.coordinator import ZonePacer
 from custom_components.cloudflare_abuse_monitor.diagnostics import async_get_config_entry_diagnostics
 
+from .conftest import SETTINGS, zone_settings
 from .conftest import ABUSE_KEY, ACCOUNT_ID, DOMAIN, ENTRY_DATA, LIST_ID, OLD_EMAIL, TOKEN, ZONE_ID, coord
 from .test_config_flow import SETUP, USER_INPUT, flow_api_mocks
 from .test_sensors import UNIQUE_IDS
@@ -279,11 +280,8 @@ async def test_options_add_a_zone_of_a_known_account(hass, live_api, config_dir,
     assert {o["value"] for o in result["data_schema"].schema[key].config["options"]} == {
         ZONE_A["id"], ZONE_B["id"], ZONE_C["id"]
     }
-    result = await hass.config_entries.options.async_configure(result["flow_id"], {
-        "zones": [ZONE_A["id"], ZONE_B["id"], ZONE_C["id"]], "abuse_confidence_score": 90, "mode": "Active",
-        "recheck_enabled": True, "recheck_days": 7, "under_attack_mode": False,
-        "under_attack_request_threshold": 15000, "scan_interval_minutes": 5,
-    })
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"zones": [ZONE_A["id"], ZONE_B["id"], ZONE_C["id"]]})
+    result = await zone_settings(hass, result, {"abuse_confidence_score": 90, "mode": "Active", "recheck_enabled": True, "recheck_days": 7, "under_attack_mode": False, "under_attack_request_threshold": 15000, "scan_interval_minutes": 5})
     await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY
     zones = {z["zone_id"]: z for z in entry.data["zones"]}
@@ -294,7 +292,9 @@ async def test_options_add_a_zone_of_a_known_account(hass, live_api, config_dir,
     assert sorted(c.args[0] for c in live_api.create_custom_entrypoint.call_args_list) == sorted(
         [ZONE_B["id"], ZONE_C["id"]]
     )
-    assert entry.options["mode"] == "Active" and "zones" not in entry.options
+    assert {z: o["mode"] for z, o in entry.options["zone_options"].items()} == {
+        ZONE_A["id"]: "Active", ZONE_B["id"]: "Active", ZONE_C["id"]: "Active"}
+    assert "zones" not in entry.options and "mode" not in entry.options
     assert entry.title == "Cloudflare: 3 zones"
     assert entry.state is ConfigEntryState.LOADED
     assert len(entry.runtime_data.coordinators) == 3
@@ -312,11 +312,8 @@ async def test_options_remove_a_zone_removes_its_device_only(hass, live_api, con
     live_api.fetch_zones.return_value = [ZONE_A, ZONE_C]
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(result["flow_id"], {
-        "zones": [ZONE_A["id"]], "abuse_confidence_score": 80, "mode": "Monitor",
-        "recheck_enabled": True, "recheck_days": 7, "under_attack_mode": False,
-        "under_attack_request_threshold": 15000, "scan_interval_minutes": 5,
-    })
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"zones": [ZONE_A["id"]]})
+    result = await zone_settings(hass, result, {"abuse_confidence_score": 80, "mode": "Monitor", "recheck_enabled": True, "recheck_days": 7, "under_attack_mode": False, "under_attack_request_threshold": 15000, "scan_interval_minutes": 5})
     await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert [z["zone_id"] for z in entry.data["zones"]] == [ZONE_A["id"]]
@@ -340,14 +337,52 @@ async def test_options_still_work_when_cloudflare_is_unreachable(hass, live_api,
     assert result["errors"] == {"base": "zones_unavailable"}
     key = next(k for k in result["data_schema"].schema if str(k) == "zones")
     assert [o["value"] for o in result["data_schema"].schema[key].config["options"]] == [ZONE_A["id"]]
-    result = await hass.config_entries.options.async_configure(result["flow_id"], {
-        "zones": [ZONE_A["id"]], "abuse_confidence_score": 80, "mode": "Monitor",
-        "recheck_enabled": True, "recheck_days": 3, "under_attack_mode": False,
-        "under_attack_request_threshold": 15000, "scan_interval_minutes": 5,
-    })
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"zones": [ZONE_A["id"]]})
+    result = await zone_settings(hass, result, {"abuse_confidence_score": 80, "mode": "Monitor", "recheck_enabled": True, "recheck_days": 3, "under_attack_mode": False, "under_attack_request_threshold": 15000, "scan_interval_minutes": 5})
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert entry.options["recheck_days"] == 3
+    assert entry.options["zone_options"][ZONE_A["id"]]["recheck_days"] == 3
     await hass.async_block_till_done()
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_each_zone_has_its_own_settings(hass, live_api, config_dir, cf):
+    """Nir, 11-17: the settings are per domain. The options ask each zone's in turn, and each zone uses its own."""
+    entry = await load(hass, make_v17_entry(hass, record(ZONE_A, LIST_ID), record(ZONE_C, LIST_2)))
+    live_api.fetch_zones.return_value = [ZONE_A, ZONE_C]
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert [str(k) for k in result["data_schema"].schema] == ["zones"]  # the zones alone first
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"zones": [ZONE_A["id"], ZONE_C["id"]]})
+    assert result["step_id"] == "zone_settings"
+    assert result["description_placeholders"]["zone"] == "example.com"
+    assert (result["description_placeholders"]["number"], result["description_placeholders"]["total"]) == ("1", "2")
+    result = await zone_settings(hass, result, per_zone={
+        "example.com": {**SETTINGS, "mode": "Active", "scan_interval_minutes": 2},
+        "example.org": {**SETTINGS, "abuse_confidence_score": 50, "under_attack_mode": True},
+    })
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    coords = entry.runtime_data.coordinators
+    a, c = coords[ZONE_A["id"]], coords[ZONE_C["id"]]
+    assert (a.option("mode", None), c.option("mode", None)) == ("Active", "Monitor")
+    assert (a.option("abuse_confidence_score", None), c.option("abuse_confidence_score", None)) == (80, 50)
+    assert (a.option("under_attack_mode", None), c.option("under_attack_mode", None)) == (False, True)
+    assert a.update_interval.total_seconds() == 120 and c.update_interval.total_seconds() == 300
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_settings_from_before_are_every_zones_until_changed(hass, live_api, config_dir, cf):
+    """An entry from before v1.9 had one set of options for every zone: each zone reads it, and the form of each
+    zone starts from it."""
+    entry = await load(hass, make_v17_entry(hass, record(ZONE_A, LIST_ID), record(ZONE_C, LIST_2),
+                                            mode="Active", abuse_confidence_score=60))
+    coords = entry.runtime_data.coordinators
+    assert {z: c.option("mode", None) for z, c in coords.items()} == {ZONE_A["id"]: "Active", ZONE_C["id"]: "Active"}
+    live_api.fetch_zones.return_value = [ZONE_A, ZONE_C]
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"zones": [ZONE_A["id"], ZONE_C["id"]]})
+    defaults = {str(k): k.default() for k in result["data_schema"].schema}
+    assert defaults["mode"] == "Active" and defaults["abuse_confidence_score"] == 60
+    hass.config_entries.options.async_abort(result["flow_id"])
     await hass.config_entries.async_unload(entry.entry_id)
 
 
@@ -415,11 +450,8 @@ async def test_migrated_entry_can_add_a_second_zone(hass, live_api, config_dir, 
     entry = await load(hass, make_entry())
     live_api.fetch_zones.return_value = [ZONE_A, ZONE_B]
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(result["flow_id"], {
-        "zones": [ZONE_A["id"], ZONE_B["id"]], "abuse_confidence_score": 80, "mode": "Monitor",
-        "recheck_enabled": True, "recheck_days": 7, "under_attack_mode": False,
-        "under_attack_request_threshold": 15000, "scan_interval_minutes": 5,
-    })
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"zones": [ZONE_A["id"], ZONE_B["id"]]})
+    result = await zone_settings(hass, result, {"abuse_confidence_score": 80, "mode": "Monitor", "recheck_enabled": True, "recheck_days": 7, "under_attack_mode": False, "under_attack_request_threshold": 15000, "scan_interval_minutes": 5})
     await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY
     zones = entry.data["zones"]

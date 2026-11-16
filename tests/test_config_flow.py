@@ -404,10 +404,12 @@ async def test_options_flow(hass, flow_api, make_entry):
     with patch(SETUP, return_value=True):
         result = await hass.config_entries.options.async_init(entry.entry_id)
         assert result["type"] is FlowResultType.FORM
+        result = await hass.config_entries.options.async_configure(result["flow_id"], {"zones": [ZONE_ID]})
+        assert result["type"] is FlowResultType.FORM and result["step_id"] == "zone_settings"
+        assert result["description_placeholders"]["number"] == "1" and result["description_placeholders"]["total"] == "1"
         result = await hass.config_entries.options.async_configure(
             result["flow_id"],
             {
-                "zones": [ZONE_ID],
                 "abuse_confidence_score": 75,
                 "mode": "Active",
                 "recheck_enabled": False,
@@ -419,6 +421,5 @@ async def test_options_flow(hass, flow_api, make_entry):
         )
         await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert entry.options["mode"] == "Active"
-    assert entry.options["recheck_enabled"] is False
-    assert entry.options["scan_interval_minutes"] == 10
+    own = entry.options["zone_options"][ZONE_ID]
+    assert own["mode"] == "Active" and own["recheck_enabled"] is False and own["scan_interval_minutes"] == 10

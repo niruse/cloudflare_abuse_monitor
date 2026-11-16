@@ -121,3 +121,19 @@ def make_entry(hass):
         entry.add_to_hass(hass)
         return entry
     return _make
+
+
+SETTINGS = {
+    "abuse_confidence_score": 80, "mode": "Monitor", "recheck_enabled": True, "recheck_days": 7,
+    "under_attack_mode": False, "under_attack_request_threshold": 15000, "scan_interval_minutes": 5,
+}
+
+
+async def zone_settings(hass, result, settings=None, per_zone=None):
+    """Answer the options flow's settings step of each zone in turn (v1.9: settings per zone), with ``settings``
+    or, for a zone named in ``per_zone`` (zone name -> settings), its own."""
+    while result.get("step_id") == "zone_settings":
+        zone = result["description_placeholders"]["zone"]
+        values = (per_zone or {}).get(zone, settings or SETTINGS)
+        result = await hass.config_entries.options.async_configure(result["flow_id"], values)
+    return result

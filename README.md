@@ -156,10 +156,10 @@ Removing a zone under **Configure**, or deleting the integration, does **not** r
 
 - **Selecting a zone** sets it up exactly as during the initial setup: the permission checks run, the IP list of its account is used (or created if the account has none yet), and the Block and Skip rules are created if they are missing. If the zone has no room for the rules, the proposed changes are shown for approval first.
 - **Deselecting a zone** removes its device and entities from Home Assistant. Its firewall rules and the IP list remain in Cloudflare unchanged, so blocking continues; remove them in the Cloudflare dashboard if they are no longer needed.
-- If Cloudflare cannot be reached, only the configured zones are listed. Zones can still be removed and the other options can still be changed.
+- If Cloudflare cannot be reached, only the configured zones are listed. Zones can still be removed and the settings can still be changed.
 - At least one zone must remain selected. To stop monitoring entirely, delete the integration entry.
 
-The other options apply to every zone of the entry:
+**Settings per zone.** After the zones, the form asks for the settings of each selected zone in turn ("Settings for example.com", zone 1 of 2, and so on). Each zone uses its own settings, so one domain can block actively while another only reports. A zone starts from its saved settings; an entry from before version 1.9 starts every zone from the settings it had for all of them.
 
 | Option | Default | Description |
 |---|---|---|
@@ -168,8 +168,8 @@ The other options apply to every zone of the entry:
 | `recheck_enabled` | enabled | Checks IP addresses again after `recheck_days`. When disabled, every IP address is checked only once. |
 | `recheck_days` | `7` | Days before an IP address is checked again (when rechecking is enabled). |
 | `under_attack_mode` | disabled | Enables Under Attack Mode automatically on a traffic spike. Effective only in `Active` mode. |
-| `under_attack_request_threshold` | `15000` | Requests between two updates of a zone that are classified as a traffic spike. Applied to each zone separately. |
-| `scan_interval_minutes` | `1` | Update interval, in minutes. |
+| `under_attack_request_threshold` | `15000` | Requests between two updates of the zone that are classified as a traffic spike. |
+| `scan_interval_minutes` | `1` | Update interval of the zone, in minutes. |
 
 ---
 
