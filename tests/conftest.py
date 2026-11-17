@@ -83,6 +83,26 @@ def config_dir(hass, tmp_path):
     return tmp_path
 
 
+def insights(visitors=42):
+    """fetch_insights' answer for one zone (api.summarise_insights' shape)."""
+    return {
+        "date": "2026-10-01", "visitors": visitors, "visitors_7d": 300, "visitors_30d": 1200,
+        "visitors_change_7d_pct": 12.5, "page_views": 120, "page_views_7d": 800, "page_views_30d": 3000,
+        "page_views_change_7d_pct": -4.0, "requests": 1000, "requests_vs_usual_pct": 110, "bandwidth_mb": 12.3,
+        "cached_mb": 4.1, "cache_ratio_pct": 33.3, "errors_4xx": 7, "errors_5xx": 2, "error_ratio_pct": 0.9,
+        "statuses": {"200": 991, "404": 7, "502": 2}, "error_paths_24h": [{"path": "/x", "status": 404, "count": 7}],
+        "countries": [{"name": "IL", "count": 900}, {"name": "US", "count": 100}], "threats": 3,
+        "security_events_24h": 5, "security_events_capped": False,
+        "security_by_action": [{"name": "block", "count": 4}, {"name": "skip", "count": 1}],
+        "security_top_countries": [{"name": "CN", "count": 3}], "security_top_paths": [{"name": "/wp-login.php", "count": 4}],
+        "daily": [{"date": "2026-10-01", "visitors": visitors, "page_views": 120, "requests": 1000, "threats": 3}],
+    }
+
+
+def settings():
+    return {"ssl": "full", "min_tls_version": "1.0", "always_use_https": "on", "weak": ["min_tls_version"]}
+
+
 @pytest.fixture
 def cf():
     """Default world: 2 skip IPs, 1 already listed, nothing high risk, security level medium."""
@@ -99,10 +119,13 @@ def cf():
         patch(f"{API}.remove_list_items") as remove,
         patch(f"{API}.get_security_level", return_value="medium") as get_level,
         patch(f"{API}.set_security_level") as set_level,
+        patch(f"{API}.fetch_insights", return_value=insights()) as fetch_insights,
+        patch(f"{API}.fetch_zone_settings", return_value=settings()) as fetch_settings,
     ):
         yield SimpleNamespace(
             traffic=fetch_traffic, skip=skip, listed=listed, items=items, abuse=abuse,
             add=add, remove=remove, get_level=get_level, set_level=set_level,
+            insights=fetch_insights, settings=fetch_settings,
         )
 
 

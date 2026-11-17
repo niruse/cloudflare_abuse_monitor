@@ -259,6 +259,169 @@ def fetch_today_traffic_summary(headers, zone_id):
     }
 
 
+# --- insights: visitors, page views, errors, cache, countries, security events, settings ----------------------------
+
+INSIGHT_DAYS = 30
+SECURITY_EVENTS_LIMIT = 1000        # the raw events of the last 24 h (Free plans have no grouped security events)
+TOP = 5
+
+
+def _top(counts, n=TOP):
+    return [{"name": k, "count": v} for k, v in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:n] if v]
+
+
+def _pct(part, whole):
+    return round(100 * part / whole, 1) if whole else None
+
+
+def fetch_insights(headers, zone_id, now=None):
+    """What a site owner wants to know, from the datasets every plan has (Analytics Read):
+
+    - per day for the last 30 days: unique visitors, page views, requests, threats, bandwidth, cache, countries,
+      HTTP status codes (httpRequests1dGroups);
+    - the last 24 hours: the paths answered with an error (httpRequestsAdaptiveGroups, status >= 400) and the
+      security events, counted here by action, country and path (firewallEventsAdaptive, at most 1,000).
+    A day's numbers are UTC days, as Cloudflare keeps them; today is the day so far."""
+    now = now or datetime.now(timezone.utc)
+    first_day = (now - timedelta(days=INSIGHT_DAYS)).date().isoformat()
+    since, until = iso_utc(now - timedelta(hours=24)), iso_utc(now)
+    query = f"""
+    {{
+      viewer {{
+        zones(filter: {{zoneTag: "{zone_id}"}}) {{
+          days: httpRequests1dGroups(limit: {INSIGHT_DAYS + 1}, orderBy: [date_ASC], filter: {{date_geq: "{first_day}"}}) {{
+            dimensions {{ date }}
+            uniq {{ uniques }}
+            sum {{
+              requests pageViews threats bytes cachedBytes cachedRequests
+              countryMap {{ clientCountryName requests threats }}
+              responseStatusMap {{ edgeResponseStatus requests }}
+            }}
+          }}
+          errors: httpRequestsAdaptiveGroups(limit: {TOP}, orderBy: [count_DESC],
+              filter: {{datetime_geq: "{since}", datetime_lt: "{until}", edgeResponseStatus_geq: 400}}) {{
+            count
+            dimensions {{ clientRequestPath edgeResponseStatus }}
+          }}
+          events: firewallEventsAdaptive(limit: {SECURITY_EVENTS_LIMIT},
+              filter: {{datetime_geq: "{since}", datetime_lt: "{until}"}}) {{
+            action clientCountryName clientRequestPath
+          }}
+        }}
+      }}
+    }}
+    """
+    zone = _graphql_zone(headers, query)
+    return summarise_insights(zone, now)
+
+
+def summarise_insights(zone, now):
+    """The raw answer of fetch_insights -> the numbers the sensors show (pure: tested without Cloudflare)."""
+    today = now.date().isoformat()
+    days = []
+    for group in zone.get("days") or []:
+        total = group.get("sum") or {}
+        days.append({
+            "date": (group.get("dimensions") or {}).get("date"),
+            "visitors": (group.get("uniq") or {}).get("uniques", 0) or 0,
+            "page_views": total.get("pageViews", 0) or 0,
+            "requests": total.get("requests", 0) or 0,
+            "threats": total.get("threats", 0) or 0,
+            "bytes": total.get("bytes", 0) or 0,
+            "cached_bytes": total.get("cachedBytes", 0) or 0,
+            "cached_requests": total.get("cachedRequests", 0) or 0,
+            "countries": {c.get("clientCountryName") or "?": c.get("requests", 0) or 0
+                          for c in total.get("countryMap") or []},
+            "statuses": {str(c.get("edgeResponseStatus")): c.get("requests", 0) or 0
+                         for c in total.get("responseStatusMap") or []},
+        })
+    day = next((d for d in days if d["date"] == today), None) or {
+        "date": today, "visitors": 0, "page_views": 0, "requests": 0, "threats": 0, "bytes": 0, "cached_bytes": 0,
+        "cached_requests": 0, "countries": {}, "statuses": {}}
+    before = [d for d in days if d["date"] and d["date"] < today]
+    last7, prev7 = before[-7:], before[-14:-7]
+
+    def total(rows, k):
+        return sum(r[k] for r in rows)
+
+    def change(k):
+        a, b = total(last7, k), total(prev7, k)
+        return round(100 * (a - b) / b, 1) if b and len(prev7) == 7 else None
+
+    # today so far against an ordinary day of the last week at the same hour (a jump: an attack or a mention)
+    usual = total(last7, "requests") / len(last7) if last7 else 0
+    elapsed = (now - now.replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds() / 86400
+    vs_usual = round(100 * day["requests"] / (usual * elapsed)) if usual and elapsed >= 1 / 24 else None
+    errors_4xx = sum(v for k, v in day["statuses"].items() if k.startswith("4"))
+    errors_5xx = sum(v for k, v in day["statuses"].items() if k.startswith("5"))
+    actions, countries, paths = {}, {}, {}
+    events = zone.get("events") or []
+    for event in events:
+        for counts, key in ((actions, event.get("action")), (countries, event.get("clientCountryName")),
+                            (paths, event.get("clientRequestPath"))):
+            if key:
+                counts[key] = counts.get(key, 0) + 1
+    return {
+        "date": today,
+        "visitors": day["visitors"],
+        "visitors_7d": total(last7, "visitors"),
+        "visitors_30d": total(before, "visitors"),
+        "visitors_change_7d_pct": change("visitors"),
+        "page_views": day["page_views"],
+        "page_views_7d": total(last7, "page_views"),
+        "page_views_30d": total(before, "page_views"),
+        "page_views_change_7d_pct": change("page_views"),
+        "requests": day["requests"],
+        "requests_vs_usual_pct": vs_usual,
+        "bandwidth_mb": round(day["bytes"] / 1e6, 1),
+        "cached_mb": round(day["cached_bytes"] / 1e6, 1),
+        "cache_ratio_pct": _pct(day["cached_requests"], day["requests"]),
+        "errors_4xx": errors_4xx,
+        "errors_5xx": errors_5xx,
+        "error_ratio_pct": _pct(errors_4xx + errors_5xx, day["requests"]),
+        "statuses": dict(sorted(day["statuses"].items())),
+        "error_paths_24h": [{"path": (g.get("dimensions") or {}).get("clientRequestPath"),
+                             "status": (g.get("dimensions") or {}).get("edgeResponseStatus"),
+                             "count": g.get("count", 0)} for g in zone.get("errors") or []],
+        "countries": _top(day["countries"]),
+        "threats": day["threats"],
+        "security_events_24h": len(events),
+        "security_events_capped": len(events) >= SECURITY_EVENTS_LIMIT,
+        "security_by_action": _top(actions, 10),
+        "security_top_countries": _top(countries),
+        "security_top_paths": _top(paths),
+        "daily": [{"date": d["date"], "visitors": d["visitors"], "page_views": d["page_views"],
+                   "requests": d["requests"], "threats": d["threats"]} for d in days],
+    }
+
+
+# what a zone's TLS settings should be at least; anything weaker is named on the settings sensor
+WEAK_SSL = ("off", "flexible")
+MIN_TLS = "1.2"
+
+
+def fetch_zone_settings(headers, zone_id):
+    """The zone's security settings (Zone Settings Read, which the token has as Edit) and what in them is weak."""
+    payload = _call("GET", f"{CLOUDFLARE_API_URL}/zones/{zone_id}/settings", headers, "Zone settings")
+    values = {s.get("id"): s.get("value") for s in payload.get("result") or []}
+    return summarise_settings(values)
+
+
+def summarise_settings(values):
+    keep = ("ssl", "min_tls_version", "always_use_https", "tls_1_3", "automatic_https_rewrites", "security_level",
+            "browser_check", "opportunistic_encryption")
+    out = {k: values.get(k) for k in keep if k in values}
+    weak = []
+    if values.get("ssl") in WEAK_SSL:
+        weak.append("ssl")
+    if values.get("min_tls_version") and str(values["min_tls_version"]) < MIN_TLS:
+        weak.append("min_tls_version")
+    if values.get("always_use_https") == "off":
+        weak.append("always_use_https")
+    out["weak"] = weak
+    return out
+
+
 def probe_analytics(headers, zone_id):
     """Read one row of each dataset the integration uses. Raises CloudflareAuthError without Analytics Read."""
     now = datetime.now(timezone.utc)

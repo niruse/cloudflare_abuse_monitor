@@ -151,6 +151,10 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._state: dict[str, Any] | None = None
         # (window start, request count, time) from the previous cycle, for the Under Attack delta.
         self._last_count: tuple[str, int, datetime] | None = None
+        # visitors/errors/security (Cloudflare's numbers move by the hour) and the zone's settings: read every
+        # INSIGHTS_EVERY, not every cycle (the cycle is a minute by default)
+        self._insights: dict[str, Any] | None = None
+        self._insights_at: datetime | None = None
 
     @property
     def zone_id(self) -> str:
@@ -225,7 +229,10 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "Under Attack Mode", self._async_under_attack, traffic, headers, now
             )
 
+        insights = await self._async_insights(headers, now)
+
         return {
+            **insights,
             "updated_at": dt_util.now(),
             "traffic": _section(
                 traffic["requests"] if traffic is not None else None,
@@ -245,6 +252,27 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "high_risk": high_risk or _section(None, {}, high_risk_err),
             "under_attack": under_attack or _section("error", {}, under_attack_err),
         }
+
+    async def _soft(self, what: str, func, *args):
+        """Like _try, but a refused read only marks its own sensors (no new token asked for an extra)."""
+        try:
+            return await self._job(func, *args), None
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Cloudflare Abuse Monitor: %s failed: %s", what, err)
+            return None, str(err) or type(err).__name__
+
+    async def _async_insights(self, headers, now) -> dict[str, Any]:
+        """The insight sections, read again once INSIGHTS_EVERY has passed (the last ones kept until then)."""
+        if self._insights is not None and self._insights_at is not None and now - self._insights_at < INSIGHTS_EVERY:
+            return self._insights
+        zone_id = self.zone_id
+        found, err = await self._soft("insights", api.fetch_insights, headers, zone_id)
+        settings, settings_err = await self._soft("zone settings", api.fetch_zone_settings, headers, zone_id)
+        sections = insight_sections(found, err)
+        sections["settings"] = _section(
+            settings.get("ssl") if settings else None, settings or {}, settings_err)
+        self._insights, self._insights_at = sections, now
+        return sections
 
     async def _async_high_risk(self, skip_ips, list_ips, headers, now) -> dict[str, Any]:
         data = self.zone
@@ -461,3 +489,36 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
 def _section(value, attrs: dict, error: str | None = None) -> dict[str, Any]:
     return {"value": value, "attrs": attrs, "error": error}
+
+
+INSIGHTS_EVERY = timedelta(minutes=15)
+
+# section -> (its value in fetch_insights' answer, the answer's keys shown as its attributes)
+INSIGHT_SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "visitors": ("visitors", ("visitors_7d", "visitors_30d", "visitors_change_7d_pct", "daily")),
+    "page_views": ("page_views", ("page_views_7d", "page_views_30d", "page_views_change_7d_pct")),
+    "traffic_vs_usual": ("requests_vs_usual_pct", ("requests",)),
+    "errors": ("errors_5xx", ("errors_4xx", "error_ratio_pct", "statuses", "error_paths_24h")),
+    "cache": ("cache_ratio_pct", ("bandwidth_mb", "cached_mb")),
+    "countries": ("countries", ()),
+    "security_events": ("security_events_24h", ("threats", "security_events_capped", "security_by_action",
+                                                "security_top_countries", "security_top_paths")),
+}
+
+
+def insight_sections(found: dict | None, error: str | None) -> dict[str, Any]:
+    """fetch_insights' answer -> one section per insight sensor (each with the answer's date)."""
+    out = {}
+    for name, (value_key, attr_keys) in INSIGHT_SECTIONS.items():
+        if found is None:
+            out[name] = _section(None, {}, error)
+            continue
+        value = found.get(value_key)
+        attrs = {k: found.get(k) for k in attr_keys}
+        if name == "countries":
+            # the state: the country with most requests today; the list as an attribute
+            attrs = {"countries": value or []}
+            value = value[0]["name"] if value else None
+        attrs["date"] = found.get("date")
+        out[name] = _section(value, attrs)
+    return out

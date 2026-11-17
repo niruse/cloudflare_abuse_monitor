@@ -18,6 +18,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             CloudflareListIPsSensor(coordinator, entry),
             CloudflareHighRiskIPsSensor(coordinator, entry),
             CloudflareUnderAttackSensor(coordinator, entry),
+            *[CloudflareInsightSensor(coordinator, entry, *spec) for spec in INSIGHT_SENSORS],
         ]
     async_add_entities(entities)
 
@@ -94,3 +95,29 @@ class CloudflareUnderAttackSensor(CloudflareBaseSensor):
         data = coordinator.zone
         self._attr_name = f"{data['zone_name']} Under Attack Mode"
         self._attr_unique_id = f"{self._prefix}_{data['zone_id']}_under_attack".replace("@", "_").replace(".", "_").lower()
+
+
+# (section, name, unit, icon): the insight sensors (v2.0), read every 15 minutes; unique ids by zone id
+INSIGHT_SENSORS = [
+    ("visitors", "Visitors Today", "visitors", "mdi:account-group-outline"),
+    ("page_views", "Page Views Today", "views", "mdi:file-eye-outline"),
+    ("traffic_vs_usual", "Traffic vs Usual", "%", "mdi:chart-timeline-variant"),
+    ("errors", "Server Errors Today", "requests", "mdi:alert-circle-outline"),
+    ("cache", "Cache Ratio Today", "%", "mdi:cached"),
+    ("countries", "Top Country Today", None, "mdi:earth"),
+    ("security_events", "Security Events 24h", "events", "mdi:shield-search"),
+    ("settings", "SSL Mode", None, "mdi:lock-outline"),
+]
+
+
+class CloudflareInsightSensor(CloudflareBaseSensor):
+    def __init__(self, coordinator, entry, section, name, unit, icon):
+        super().__init__(coordinator, entry)
+        self._section = section
+        data = coordinator.zone
+        self._attr_name = f"{data['zone_name']} {name}"
+        self._attr_unique_id = f"{data['zone_id']}_insight_{section}"
+        self._attr_native_unit_of_measurement = unit
+        self._attr_icon = icon
+        if unit and section != "countries":
+            self._attr_state_class = "measurement"

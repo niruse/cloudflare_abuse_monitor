@@ -20,6 +20,7 @@ At every update (every minute by default) the integration performs the following
 4. It checks every visitor that is not yet in the list on AbuseIPDB, once, and again after a configurable number of days if rechecking is enabled. Scores are cached, so each IP address costs one AbuseIPDB lookup rather than one per update.
 5. It classifies IP addresses whose score reaches the configured threshold as **high risk**. In **Active** mode it adds them to the IP list, and the Cloudflare Block rule blocks them. In **Monitor** mode it only reports them.
 6. In **Active** mode, with automatic Under Attack Mode enabled, it enables Under Attack Mode when the number of requests between two updates reaches the configured threshold.
+7. Every 15 minutes it also reads the zone's insights: visitors, page views, errors, cache, countries and security events for today and the last 30 days, and the zone's TLS settings (see [Insights](#insights)).
 
 All access uses one scoped Cloudflare API token, which can access only the selected zones and the IP lists of their accounts.
 
@@ -230,6 +231,23 @@ Each zone is a device named **Cloudflare** followed by the zone name. For a zone
 | `switch.example_com_under_attack` | `on` while the security level is `under_attack` | `security_level`, `enabled_by_integration` |
 
 Every sensor also provides `next_update_in_seconds` and `next_update` (local time), and an `error` attribute when its part of the update failed. A failure in one part never affects the other sensors.
+
+### Insights
+
+Since v2.0, each zone also has the following sensors. They are read every 15 minutes, with the permissions the token already has (Analytics Read and Zone Settings), and work on the Free plan. Days are UTC days, as Cloudflare keeps them; "today" is the day so far.
+
+| Entity | State | Main attributes |
+|---|---|---|
+| `sensor.example_com_visitors_today` | Unique visitors today | `visitors_7d`, `visitors_30d` (daily unique visitors added up), `visitors_change_7d_pct` (the last 7 days against the 7 before), `daily` (visitors, page views, requests and threats per day for 30 days) |
+| `sensor.example_com_page_views_today` | Page views today | `page_views_7d`, `page_views_30d`, `page_views_change_7d_pct` |
+| `sensor.example_com_traffic_vs_usual` | Requests so far today as a percentage of an ordinary day of the last week at the same hour (100 = usual) | `requests` |
+| `sensor.example_com_server_errors_today` | Requests answered with 5xx today | `errors_4xx`, `error_ratio_pct`, `statuses`, `error_paths_24h` (the paths most often answered with an error in the last 24 hours) |
+| `sensor.example_com_cache_ratio_today` | Share of requests answered from the Cloudflare cache (%) | `bandwidth_mb`, `cached_mb` |
+| `sensor.example_com_top_country_today` | The country with the most requests today | `countries` (top 5 with request counts) |
+| `sensor.example_com_security_events_24h` | Security events in the last 24 hours | `threats`, `security_by_action`, `security_top_countries`, `security_top_paths`, `security_events_capped` (more than the 1,000 events read) |
+| `sensor.example_com_ssl_mode` | The zone's SSL mode | `min_tls_version`, `always_use_https`, `tls_1_3`, `security_level`, `weak` (what is weaker than recommended: SSL `off`/`flexible`, minimum TLS below 1.2, Always Use HTTPS off) |
+
+Unique visitors count only traffic that passes through Cloudflare: a hostname whose DNS record is not proxied (grey cloud) is not counted. Security events are read one by one, because grouped security events are not available on the Free plan; at most 1,000 events a day are counted.
 
 ---
 
