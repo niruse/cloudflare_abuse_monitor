@@ -67,6 +67,10 @@ class CloudflareSkipIPsSensor(CloudflareBaseSensor):
 
 class CloudflareListIPsSensor(CloudflareBaseSensor):
     _section = "list_ips"
+    # The list can hold thousands of addresses. The recorder refuses state
+    # attributes over 16384 bytes and logs a warning on every update (issue #6),
+    # so the list stays on the live state only and is not written to history.
+    _unrecorded_attributes = frozenset({"current_list_ips"})
 
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry)

@@ -46,6 +46,26 @@ async def test_all_sensors_from_one_cycle(hass, config_dir, cf, make_entry, capl
     await hass.config_entries.async_unload(entry.entry_id)
 
 
+async def test_the_ip_list_is_kept_out_of_the_recorder(hass, config_dir, cf, make_entry):
+    """A list of ~5,000 addresses passes the recorder's 16384-byte limit for
+    state attributes, which logged a warning on every update (issue #6). The
+    list stays on the live state and is not recorded; the count still is."""
+    from custom_components.cloudflare_abuse_monitor.sensor import CloudflareListIPsSensor, CloudflareSkipIPsSensor
+
+    cf.listed.return_value = {f"10.{a}.{b}.1" for a in range(20) for b in range(250)}
+    entry = make_entry()
+    await setup(hass, entry)
+
+    live = state(hass, "list")
+    assert live.state == "5000" and len(live.attributes["current_list_ips"]) == 5000
+    assert len(json.dumps(live.attributes["current_list_ips"])) > 16384  # the case that was refused
+    unrecorded = CloudflareListIPsSensor._Entity__combined_unrecorded_attributes
+    assert "current_list_ips" in unrecorded
+    # Only this attribute: the other sensors keep recording theirs.
+    assert "skip_ips" not in CloudflareSkipIPsSensor._Entity__combined_unrecorded_attributes
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
 async def test_failed_call_marks_only_its_sensor(hass, config_dir, cf, make_entry):
     cf.traffic.side_effect = RuntimeError("graphql down")
     entry = make_entry()
