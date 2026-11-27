@@ -181,7 +181,7 @@ async def test_each_zone_is_its_own_device_with_its_own_entities(hass, config_di
     assert sorted(d.name for d in devices) == ["Cloudflare example.com", "Cloudflare example.org"]
     entities = er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
     assert len(entities) == 30  # 5 sensors + 9 insight sensors + 1 switch per zone
-    assert len({e.unique_id for e in entities}) == 28
+    assert len({e.unique_id for e in entities}) == 30
     by_device = {}
     for e in entities:
         by_device.setdefault(e.device_id, []).append(e)
@@ -298,7 +298,7 @@ async def test_options_add_a_zone_of_a_known_account(hass, live_api, config_dir,
     assert entry.title == "Cloudflare: 3 zones"
     assert entry.state is ConfigEntryState.LOADED
     assert len(entry.runtime_data.coordinators) == 3
-    assert len(er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)) == 42
+    assert len(er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)) == 45
     await hass.config_entries.async_unload(entry.entry_id)
 
 
@@ -321,7 +321,7 @@ async def test_options_remove_a_zone_removes_its_device_only(hass, live_api, con
     devices = dr.async_entries_for_config_entry(dev_reg, entry.entry_id)
     assert [d.name for d in devices] == ["Cloudflare example.com"]
     remaining = {e.entity_id for e in er.async_entries_for_config_entry(ent_reg, entry.entry_id)}
-    assert remaining == kept and len(remaining) == 14
+    assert remaining == kept and len(remaining) == 15
     # Nothing is written to Cloudflare for a removed zone: no probes, no rules, no list changes.
     live_api.set_security_level.assert_not_called()
     live_api.create_custom_entrypoint.assert_not_called()
@@ -427,7 +427,7 @@ async def test_v16_entry_migrates_keeping_ids_device_and_state(hass, config_dir,
         assert ent_reg.async_get_entity_id("sensor", DOMAIN, uid) == old[key]
         assert hass.states.get(old[key]) is not None
     assert ent_reg.async_get_entity_id("switch", DOMAIN, switch_uid) == old_switch
-    assert len(er.async_entries_for_config_entry(ent_reg, entry.entry_id)) == 14  # no duplicates
+    assert len(er.async_entries_for_config_entry(ent_reg, entry.entry_id)) == 15  # no duplicates
     devices = dr.async_entries_for_config_entry(dev_reg, entry.entry_id)
     assert [d.id for d in devices] == [device.id]  # same device, new per-zone identifier
     assert devices[0].identifiers == {(DOMAIN, f"{entry.entry_id}_{ZONE_ID}")}
@@ -442,7 +442,7 @@ async def test_v16_entry_migrates_keeping_ids_device_and_state(hass, config_dir,
     await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()
     assert len(entry.data["zones"]) == 1
-    assert len(er.async_entries_for_config_entry(ent_reg, entry.entry_id)) == 14
+    assert len(er.async_entries_for_config_entry(ent_reg, entry.entry_id)) == 15
     await hass.config_entries.async_unload(entry.entry_id)
 
 
