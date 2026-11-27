@@ -8,6 +8,13 @@ The integration can be installed through [HACS](https://hacs.xyz) as a custom re
 
 To support the project, you can [buy the author a coffee](https://coff.ee/niruse).
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/dashboard-dark.png">
+  <img src="docs/images/dashboard.png" alt="A dashboard for one zone: visitors, health and security, and the Cloudflare protection with the blocked requests">
+</picture>
+
+*The [example dashboard](#example-dashboard) with sample data.*
+
 ---
 
 ## Overview
@@ -20,7 +27,8 @@ At every update (every minute by default) the integration performs the following
 4. It checks every visitor that is not yet in the list on AbuseIPDB, once, and again after a configurable number of days if rechecking is enabled. Scores are cached, so each IP address costs one AbuseIPDB lookup rather than one per update.
 5. It classifies IP addresses whose score reaches the configured threshold as **high risk**. In **Active** mode it adds them to the IP list, and the Cloudflare Block rule blocks them. In **Monitor** mode it only reports them.
 6. In **Active** mode, with automatic Under Attack Mode enabled, it enables Under Attack Mode when the number of requests between two updates reaches the configured threshold.
-7. Every 15 minutes it also reads the zone's insights: visitors, page views, errors, cache, countries and security events for today and the last 30 days, and the zone's TLS settings (see [Insights](#insights)).
+7. Every 15 minutes it also reads the zone's insights: visitors, page views, errors, cache, countries, security events and blocked requests for today and the last 30 days, and the zone's TLS settings (see [Insights](#insights)).
+8. When a lookup finds a high-risk IP address, it fires an event that an automation can use to send a notification (see [Events](#events)).
 
 All access uses one scoped Cloudflare API token, which can access only the selected zones and the IP lists of their accounts.
 
@@ -219,16 +227,18 @@ Each IP address is checked once, and its score is stored in `/config/cloudflare_
 
 ## Entities
 
-Each zone is a device named **Cloudflare** followed by the zone name. For a zone `example.com` the entity IDs are as follows (an entry upgraded from v1.5 or v1.6 keeps its existing IDs):
+Each zone is a device named **Cloudflare** followed by the zone name. For a zone `example.com` the entity IDs are as follows (an entry upgraded from v1.5 or v1.6 keeps its existing IDs). Recent Home Assistant versions put the device name in front of the entity ID, for example `sensor.cloudflare_example_com_example_com_traffic_summary`; the IDs of your installation are listed on the device page of the zone.
 
 | Entity | State | Main attributes |
 |---|---|---|
 | `sensor.example_com_traffic_summary` | Requests today (UTC) | `pageviews`, `requests`, `bytes`, `cached_bytes`, `cached_requests`, `encrypted_bytes`, `encrypted_requests`, `from`, `to`, `zone_id` |
 | `sensor.example_com_skip_ips` | Visitors recorded by the Skip rule today | `skip_ips` |
 | `sensor.example_com_list_ips` | IP addresses in the IP list of the account | `current_list_ips` |
-| `sensor.example_com_high_risk_ips` | High-risk IP addresses found at this update | `high_risk_ip_list`, `ips_to_check`, `blocked_ips`, `abuse_confidence_score_threshold`, `recheck_enabled`, `recheck_days`, `mode` |
+| `sensor.example_com_high_risk_ips` | High-risk IP addresses found at this update | `high_risk_ip_list`, `high_risk_details` (for each high-risk IP address: `score`, `country`, `usage_type`, `isp`, `domain`, `total_reports`, `last_reported`), `ips_to_check`, `blocked_ips`, `abuseipdb_lookups_left`, `abuseipdb_daily_limit`, `abuse_confidence_score_threshold`, `recheck_enabled`, `recheck_days`, `mode` |
 | `sensor.example_com_under_attack_mode` | `on` or `off` (`error` if the level could not be read) | `security_level`, `current_request_count`, `last_request_count`, `delta`, `threshold`, `enabled`, `enabled_by_integration`, `mode`, `reason` |
 | `switch.example_com_under_attack` | `on` while the security level is `under_attack` | `security_level`, `enabled_by_integration` |
+
+`abuseipdb_lookups_left` and `abuseipdb_daily_limit` are the values AbuseIPDB reported with its last answer, for the key of the entry (all its zones share them). They are empty until the first lookup after a start. The details of an IP address checked before v2.2 contain only the score until it is checked again.
 
 Every sensor also provides `next_update_in_seconds` and `next_update` (local time), and an `error` attribute when its part of the update failed. A failure in one part never affects the other sensors.
 
@@ -245,9 +255,10 @@ Since v2.0, each zone also has the following sensors. They are read every 15 min
 | `sensor.example_com_cache_ratio_today` | Share of requests answered from the Cloudflare cache (%) | `bandwidth_mb`, `cached_mb` |
 | `sensor.example_com_top_country_today` | The country with the most requests today | `countries` (top 5 with request counts) |
 | `sensor.example_com_security_events_24h` | Security events in the last 24 hours | `threats`, `security_by_action`, `security_top_countries`, `security_top_paths`, `security_events_capped` (more than the 1,000 events read) |
+| `sensor.example_com_blocked_requests_24h` (since v2.2) | Requests blocked by a firewall rule in the last 24 hours | `blocked_ips_24h` (the number of different IP addresses), `blocked_top_ips`, `blocked_top_countries`, `blocked_top_paths` (the five blocked most, with counts), `blocked_capped` (more than the 1,000 events read) |
 | `sensor.example_com_ssl_mode` | The zone's SSL mode | `min_tls_version`, `always_use_https`, `tls_1_3`, `security_level`, `weak` (what is weaker than recommended: SSL `off`/`flexible`, minimum TLS below 1.2, Always Use HTTPS off) |
 
-Unique visitors count only traffic that passes through Cloudflare: a hostname whose DNS record is not proxied (grey cloud) is not counted. Security events are read one by one, because grouped security events are not available on the Free plan; at most 1,000 events a day are counted.
+Unique visitors count only traffic that passes through Cloudflare: a hostname whose DNS record is not proxied (grey cloud) is not counted. Security events are read one by one, because grouped security events are not available on the Free plan; at most 1,000 events a day are counted. The Skip rule logs every visitor, so most of these events are visitors; the blocked requests are therefore read separately (again at most 1,000) and shown on their own sensor. It counts every request that a firewall rule blocked, which on most zones is the Block rule of the IP list.
 
 ---
 
@@ -292,9 +303,48 @@ data:
 
 ---
 
+## Events
+
+Since v2.2 the integration fires the event `cloudflare_abuse_monitor_high_risk_ip` when an AbuseIPDB lookup finds a visitor whose score reaches the threshold of the zone. The event is fired once per lookup, in both modes: an IP address that stays in the high-risk list does not fire it again at every update, only when it is checked again after `recheck_days`.
+
+| Field | Content |
+|---|---|
+| `zone` | The zone name, for example `example.com`. |
+| `ip` | The IP address. |
+| `score` | The AbuseIPDB confidence score (0-100). |
+| `country`, `usage_type`, `isp`, `domain`, `total_reports`, `last_reported` | What AbuseIPDB reports about the IP address. |
+| `threshold` | The score threshold of the zone. |
+| `mode` | `Monitor` or `Active`. |
+| `blocked` | `true` if the IP address was added to the IP list at this update (Active mode); `false` in Monitor mode, or if Cloudflare refused the addition. |
+
+An automation that sends a notification:
+
+```yaml
+alias: Cloudflare high-risk visitor
+triggers:
+  - trigger: event
+    event_type: cloudflare_abuse_monitor_high_risk_ip
+actions:
+  - action: notify.notify
+    data:
+      title: "{{ trigger.event.data.zone }}: high-risk visitor"
+      message: >-
+        {{ trigger.event.data.ip }} ({{ trigger.event.data.country }}, {{ trigger.event.data.isp }})
+        has an AbuseIPDB score of {{ trigger.event.data.score }}.
+        {{ 'It was blocked.' if trigger.event.data.blocked else 'It was not blocked.' }}
+```
+
+---
+
 ## Example dashboard
 
-This example uses [`button-card`](https://github.com/custom-cards/button-card). Replace the entity IDs with your own; repeat the stack for each zone.
+The picture at the top of this page is [`examples/dashboard.yaml`](examples/dashboard.yaml), drawn with sample data. It is a complete dashboard for one zone and uses [`button-card`](https://github.com/custom-cards/button-card): visitors and page views with a chart of the last 30 days, errors, cache and TLS settings, and the protection of the zone with the requests and IP addresses that were blocked most, the AbuseIPDB details of the high-risk IP addresses and the lookups left today.
+
+To use it, create a dashboard, open **Raw configuration editor**, paste the file, and replace `cloudflare_example_com_example_com_` with the prefix of your own entity IDs and `example.com` with your zone. The steps are repeated at the top of the file.
+
+### A minimal card
+
+A smaller example, also with `button-card`. Replace the entity IDs with your own; repeat the stack for each zone.
 
 ```yaml
 type: vertical-stack
