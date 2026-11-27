@@ -59,7 +59,7 @@ async def test_migrated_entry_keeps_every_unique_id(hass, config_dir, cf, make_e
         assert registry.async_get_entity_id("sensor", DOMAIN, uid) == old[key]
         assert hass.states.get(old[key]) is not None
     sensors = [e for e in er.async_entries_for_config_entry(registry, entry.entry_id) if e.domain == "sensor"]
-    assert len(sensors) == 13  # 5 + 8 insight sensors: no orphans, no duplicates
+    assert len(sensors) == 14  # 5 + 9 insight sensors: no orphans, no duplicates
     await hass.config_entries.async_unload(entry.entry_id)
 
 

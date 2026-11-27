@@ -180,7 +180,7 @@ async def test_each_zone_is_its_own_device_with_its_own_entities(hass, config_di
     devices = dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
     assert sorted(d.name for d in devices) == ["Cloudflare example.com", "Cloudflare example.org"]
     entities = er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
-    assert len(entities) == 28  # 5 sensors + 8 insight sensors + 1 switch per zone
+    assert len(entities) == 30  # 5 sensors + 9 insight sensors + 1 switch per zone
     assert len({e.unique_id for e in entities}) == 28
     by_device = {}
     for e in entities:

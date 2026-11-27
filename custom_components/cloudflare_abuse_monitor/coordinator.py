@@ -32,6 +32,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL_MINUTES,
     DEFAULT_UNDER_ATTACK_THRESHOLD,
     DOMAIN,
+    EVENT_HIGH_RISK_IP,
     FALLBACK_SECURITY_LEVEL,
     MODE_ACTIVE,
     MODE_MONITOR,
@@ -155,6 +156,9 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # INSIGHTS_EVERY, not every cycle (the cycle is a minute by default)
         self._insights: dict[str, Any] | None = None
         self._insights_at: datetime | None = None
+        # AbuseIPDB's daily lookups, as its last answer reported them. One dict for the whole entry (the key is
+        # the entry's), shared by its zones in async_setup_entry.
+        self.abuse_quota: dict[str, Any] = {"limit": None, "remaining": None}
 
     @property
     def zone_id(self) -> str:
@@ -286,6 +290,7 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         ips_to_check: list[str] = []
         high_risk: list[str] = []
+        found_now: list[str] = []  # high risk by a lookup of this cycle: announced once, with an event
         async with _CACHE_LOCK:
             cache = await self._job(_read_cache, self._cache_path)
             changed = False
@@ -301,6 +306,7 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         result = await self._job(api.check_abuse_ip, ip, self.entry.data[CONF_ABUSEIPDB_TOKEN])
                     except api.AbuseIPDBRateLimited:
                         _LOGGER.warning("AbuseIPDB daily quota reached; the remaining IPs wait for a later cycle")
+                        self.abuse_quota["remaining"] = 0
                         stop_lookups = True
                         continue
                     except Exception as err:  # noqa: BLE001
@@ -312,19 +318,36 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         _LOGGER.warning("AbuseIPDB lookup for %s failed: %s", ip, result["error"])
                         continue
                     score = result["abuse_confidence_score"]
-                    cache[ip] = {"checked": now.isoformat(), "score": score}
+                    cache[ip] = {"checked": now.isoformat(), "score": score, **_lookup_details(result)}
                     changed = True
+                    self._note_quota(result)
+                    if score >= threshold:
+                        found_now.append(ip)
                 if score is not None and score >= threshold:
                     high_risk.append(ip)
+            details = {ip: _cached_details(cache.get(ip)) for ip in high_risk}
             if changed:
                 await self._job(_write_cache, self._cache_path, cache)
 
         # A known high-risk IP stays a candidate until it is really in the list, so a failed
         # add, or a switch from Monitor to Active, is retried instead of waiting recheck_days.
         blocked: list[str] = []
+        add_error: Exception | None = None
         if mode == MODE_ACTIVE and high_risk:
-            await self._job(api.add_ips_to_list, data["account_id"], data["list_id"], high_risk, headers)
-            blocked = high_risk
+            try:
+                await self._job(api.add_ips_to_list, data["account_id"], data["list_id"], high_risk, headers)
+                blocked = high_risk
+            except Exception as err:  # noqa: BLE001 - raised below, after the events
+                add_error = err
+        # An automation can notify on this. Fired once per lookup (so again only after recheck_days), also when
+        # the add failed: "blocked" says whether the address is in the list now.
+        for ip in found_now:
+            self.hass.bus.async_fire(EVENT_HIGH_RISK_IP, {
+                "zone": data["zone_name"], "ip": ip, **details[ip], "threshold": threshold, "mode": mode,
+                "blocked": ip in blocked,
+            })
+        if add_error is not None:
+            raise add_error
 
         return _section(
             len(high_risk),
@@ -334,8 +357,11 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "recheck_enabled": recheck_enabled,
                 "mode": mode,
                 "high_risk_ip_list": high_risk,
+                "high_risk_details": details,
                 "ips_to_check": ips_to_check,
                 "blocked_ips": blocked,
+                "abuseipdb_lookups_left": self.abuse_quota["remaining"],
+                "abuseipdb_daily_limit": self.abuse_quota["limit"],
             },
         )
 
@@ -431,14 +457,21 @@ class CloudflareAbuseMonitorCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._async_save_state(enabled_by_us=False, restore_level=None, manual=False)
         await self.async_request_refresh()
 
+    def _note_quota(self, result: dict) -> None:
+        for key in ("limit", "remaining"):
+            if result.get(f"quota_{key}") is not None:
+                self.abuse_quota[key] = result[f"quota_{key}"]
+
     async def async_check_ip(self, ip: str) -> dict[str, Any]:
         """Look one IP up now; a score is cached like the automatic lookups."""
         result = await self._job(api.check_abuse_ip, ip, self.entry.data[CONF_ABUSEIPDB_TOKEN])
         result.pop("status", None)
         if "error" not in result:
+            self._note_quota(result)
             async with _CACHE_LOCK:
                 cache = await self._job(_read_cache, self._cache_path)
-                cache[ip] = {"checked": dt_util.utcnow().isoformat(), "score": result["abuse_confidence_score"]}
+                cache[ip] = {"checked": dt_util.utcnow().isoformat(), "score": result["abuse_confidence_score"],
+                             **_lookup_details(result)}
                 await self._job(_write_cache, self._cache_path, cache)
         return result
 
@@ -491,6 +524,23 @@ def _section(value, attrs: dict, error: str | None = None) -> dict[str, Any]:
     return {"value": value, "attrs": attrs, "error": error}
 
 
+# What AbuseIPDB says about an address besides its score: kept in the cache, shown for the high-risk addresses
+# and sent with the event. cache key -> the key in check_abuse_ip's answer.
+_DETAILS = {"country": "countryCode", "usage_type": "usageType", "isp": "isp", "domain": "domain",
+            "total_reports": "totalReports", "last_reported": "lastReportedAt"}
+
+
+def _lookup_details(result: dict) -> dict[str, Any]:
+    return {key: result[source] for key, source in _DETAILS.items() if result.get(source) is not None}
+
+
+def _cached_details(value) -> dict[str, Any]:
+    """The score and details of a cache entry (an entry written before v2.2 has the score only)."""
+    if not isinstance(value, dict):
+        return {"score": None}
+    return {"score": value.get("score"), **{key: value[key] for key in _DETAILS if key in value}}
+
+
 INSIGHTS_EVERY = timedelta(minutes=15)
 
 # section -> (its value in fetch_insights' answer, the answer's keys shown as its attributes)
@@ -503,6 +553,8 @@ INSIGHT_SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
     "countries": ("countries", ()),
     "security_events": ("security_events_24h", ("threats", "security_events_capped", "security_by_action",
                                                 "security_top_countries", "security_top_paths")),
+    "blocked": ("blocked_requests_24h", ("blocked_ips_24h", "blocked_capped", "blocked_top_ips",
+                                         "blocked_top_countries", "blocked_top_paths")),
 }
 
 

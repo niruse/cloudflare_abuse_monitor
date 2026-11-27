@@ -209,8 +209,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     pacer = ZonePacer()
     runtime = RuntimeData()
     not_ready: list[Exception] = []
+    abuse_quota = {"limit": None, "remaining": None}  # the AbuseIPDB key is the entry's: one count for its zones
     for zone in zones:
         coordinator = CloudflareAbuseMonitorCoordinator(hass, entry, zone, pacer)
+        coordinator.abuse_quota = abuse_quota
         try:
             await coordinator.async_config_entry_first_refresh()
         except ConfigEntryNotReady as err:

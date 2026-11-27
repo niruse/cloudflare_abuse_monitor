@@ -110,6 +110,7 @@ INSIGHT_SENSORS = [
     ("cache", "Cache Ratio Today", "%", "mdi:cached"),
     ("countries", "Top Country Today", None, "mdi:earth"),
     ("security_events", "Security Events 24h", "events", "mdi:shield-search"),
+    ("blocked", "Blocked Requests 24h", "requests", "mdi:shield-off-outline"),
     ("settings", "SSL Mode", None, "mdi:lock-outline"),
 ]
 

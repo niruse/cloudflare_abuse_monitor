@@ -30,6 +30,10 @@ SERVICE_UNBLOCK_IP = "unblock_ip"
 SERVICE_REFRESH = "refresh"
 SERVICE_RESTORE_RULES = "restore_rules"
 
+# Fired when a lookup finds a visitor at or above the zone's score threshold (v2.2): zone, ip, score, country,
+# usage_type, isp, domain, total_reports, last_reported, threshold, mode, blocked.
+EVENT_HIGH_RISK_IP = f"{DOMAIN}_high_risk_ip"
+
 # v1.7: one entry per token, any number of zones. Each zone is a dict in data[CONF_ZONES]
 # (a list, so diagnostics can redact it): zone_id, zone_name, account_id, list_name, list_id,
 # uid_prefix and, for the zone moved from a v1.6 entry, legacy_storage.
