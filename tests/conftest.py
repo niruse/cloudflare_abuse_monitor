@@ -86,7 +86,10 @@ def config_dir(hass, tmp_path):
 def insights(visitors=42):
     """fetch_insights' answer for one zone (api.summarise_insights' shape)."""
     return {
-        "date": "2026-10-01", "visitors": visitors, "visitors_7d": 300, "visitors_30d": 1200,
+        "date": "2026-10-01", "blocked_requests_24h": 4, "blocked_capped": False, "blocked_ips_24h": 2,
+        "blocked_top_ips": [{"name": "203.0.113.66", "count": 3}, {"name": "203.0.113.67", "count": 1}],
+        "blocked_top_countries": [{"name": "CN", "count": 4}],
+        "blocked_top_paths": [{"name": "/wp-login.php", "count": 4}], "visitors": visitors, "visitors_7d": 300, "visitors_30d": 1200,
         "visitors_change_7d_pct": 12.5, "page_views": 120, "page_views_7d": 800, "page_views_30d": 3000,
         "page_views_change_7d_pct": -4.0, "requests": 1000, "requests_vs_usual_pct": 110, "bandwidth_mb": 12.3,
         "cached_mb": 4.1, "cache_ratio_pct": 33.3, "errors_4xx": 7, "errors_5xx": 2, "error_ratio_pct": 0.9,

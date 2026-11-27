@@ -279,8 +279,9 @@ def fetch_insights(headers, zone_id, now=None):
 
     - per day for the last 30 days: unique visitors, page views, requests, threats, bandwidth, cache, countries,
       HTTP status codes (httpRequests1dGroups);
-    - the last 24 hours: the paths answered with an error (httpRequestsAdaptiveGroups, status >= 400) and the
-      security events, counted here by action, country and path (firewallEventsAdaptive, at most 1,000).
+    - the last 24 hours: the paths answered with an error (httpRequestsAdaptiveGroups, status >= 400), the
+      security events, counted here by action, country and path (firewallEventsAdaptive, at most 1,000), and the
+      requests that were blocked, read on their own so that the logged visitors do not use up their 1,000.
     A day's numbers are UTC days, as Cloudflare keeps them; today is the day so far."""
     now = now or datetime.now(timezone.utc)
     first_day = (now - timedelta(days=INSIGHT_DAYS)).date().isoformat()
@@ -306,6 +307,10 @@ def fetch_insights(headers, zone_id, now=None):
           events: firewallEventsAdaptive(limit: {SECURITY_EVENTS_LIMIT},
               filter: {{datetime_geq: "{since}", datetime_lt: "{until}"}}) {{
             action clientCountryName clientRequestPath
+          }}
+          blocked: firewallEventsAdaptive(limit: {SECURITY_EVENTS_LIMIT},
+              filter: {{datetime_geq: "{since}", datetime_lt: "{until}", action: "block"}}) {{
+            clientIP clientCountryName clientRequestPath
           }}
         }}
       }}
@@ -361,8 +366,21 @@ def summarise_insights(zone, now):
                             (paths, event.get("clientRequestPath"))):
             if key:
                 counts[key] = counts.get(key, 0) + 1
+    blocked = zone.get("blocked") or []
+    blocked_ips, blocked_countries, blocked_paths = {}, {}, {}
+    for event in blocked:
+        for counts, key in ((blocked_ips, event.get("clientIP")), (blocked_countries, event.get("clientCountryName")),
+                            (blocked_paths, event.get("clientRequestPath"))):
+            if key:
+                counts[key] = counts.get(key, 0) + 1
     return {
         "date": today,
+        "blocked_requests_24h": len(blocked),
+        "blocked_capped": len(blocked) >= SECURITY_EVENTS_LIMIT,
+        "blocked_ips_24h": len(blocked_ips),
+        "blocked_top_ips": _top(blocked_ips),
+        "blocked_top_countries": _top(blocked_countries),
+        "blocked_top_paths": _top(blocked_paths),
         "visitors": day["visitors"],
         "visitors_7d": total(last7, "visitors"),
         "visitors_30d": total(before, "visitors"),
@@ -778,6 +796,11 @@ def block_rule_position(ruleset):
 
 # --- AbuseIPDB ---------------------------------------------------------------------------
 
+def _header_int(response, name):
+    value = response.headers.get(name)
+    return int(value) if isinstance(value, str) and value.isdigit() else None
+
+
 def check_abuse_ip(ip: str, api_key: str):
     querystring = {
         "ipAddress": ip,
@@ -803,8 +826,12 @@ def check_abuse_ip(ip: str, api_key: str):
             "countryCode": data.get("countryCode", "Unknown"),
             "usageType": data.get("usageType", "Unknown"),
             "domain": data.get("domain", "Unknown"),
+            "isp": data.get("isp", "Unknown"),
             "totalReports": data.get("totalReports", 0),
             "lastReportedAt": data.get("lastReportedAt", "Never"),
+            # the day's lookups: the plan's limit and what is left of it (None if AbuseIPDB did not say)
+            "quota_limit": _header_int(response, "X-RateLimit-Limit"),
+            "quota_remaining": _header_int(response, "X-RateLimit-Remaining"),
         }
     detail = "; ".join(
         str(e.get("detail", "")) for e in _errors(_payload(response)) if e.get("detail")

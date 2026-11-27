@@ -1,6 +1,7 @@
 import json
 
 from homeassistant.helpers import entity_registry as er
+from pytest_homeassistant_custom_component.common import async_capture_events
 
 from .conftest import DOMAIN, coord, traffic
 
@@ -109,6 +110,94 @@ async def test_high_risk_cached_and_blocked_in_active_mode(hass, config_dir, cf,
     await coordinator.async_refresh()
     cf.abuse.assert_not_called()
     assert cf.add.call_args.args[2] == ["203.0.113.10"]
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+def lookup(score, left):
+    return lambda ip, key: {
+        "ip": ip, "abuse_confidence_score": score, "countryCode": "CN", "usageType": "Data Center/Web Hosting/Transit",
+        "isp": "Example Hosting", "domain": "example.net", "totalReports": 12, "lastReportedAt": "2026-10-01T10:00:00+00:00",
+        "quota_limit": 1000, "quota_remaining": left,
+    }
+
+
+async def test_a_high_risk_address_is_announced_once_with_its_details(hass, config_dir, cf, make_entry):
+    """An event per address found, for notifications: fired by the lookup, not by every cycle after it."""
+    events = async_capture_events(hass, f"{DOMAIN}_high_risk_ip")
+    cf.abuse.side_effect = lookup(97, 993)
+    entry = make_entry(mode="Active", abuse_confidence_score=80.0)
+    coordinator = await setup(hass, entry)
+
+    assert len(events) == 1
+    assert events[0].data == {
+        "zone": "example.com", "ip": "203.0.113.10", "score": 97, "country": "CN",
+        "usage_type": "Data Center/Web Hosting/Transit", "isp": "Example Hosting", "domain": "example.net",
+        "total_reports": 12, "last_reported": "2026-10-01T10:00:00+00:00", "threshold": 80, "mode": "Active",
+        "blocked": True,
+    }
+    high = state(hass, "high_risk")
+    assert high.attributes["high_risk_details"]["203.0.113.10"]["isp"] == "Example Hosting"
+    assert high.attributes["high_risk_details"]["203.0.113.10"]["score"] == 97
+    assert (high.attributes["abuseipdb_lookups_left"], high.attributes["abuseipdb_daily_limit"]) == (993, 1000)
+
+    # Still a candidate at the next cycle (the add has not shown up in the list): no second event.
+    await coordinator.async_refresh()
+    assert len(events) == 1
+    assert state(hass, "high_risk").attributes["high_risk_details"]["203.0.113.10"]["country"] == "CN"
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_a_low_score_is_not_announced(hass, config_dir, cf, make_entry):
+    events = async_capture_events(hass, f"{DOMAIN}_high_risk_ip")
+    cf.abuse.side_effect = lookup(10, 990)
+    entry = make_entry()
+    await setup(hass, entry)
+    assert events == [] and state(hass, "high_risk").attributes["high_risk_details"] == {}
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_monitor_mode_announces_without_blocking(hass, config_dir, cf, make_entry):
+    events = async_capture_events(hass, f"{DOMAIN}_high_risk_ip")
+    cf.abuse.side_effect = lookup(100, 989)
+    entry = make_entry()
+    await setup(hass, entry)
+    assert [(e.data["ip"], e.data["mode"], e.data["blocked"]) for e in events] == [("203.0.113.10", "Monitor", False)]
+    cf.add.assert_not_called()
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_a_failed_add_is_announced_as_not_blocked(hass, config_dir, cf, make_entry):
+    events = async_capture_events(hass, f"{DOMAIN}_high_risk_ip")
+    cf.abuse.side_effect = lookup(100, 5)
+    cf.add.side_effect = RuntimeError("list is full")
+    entry = make_entry(mode="Active", abuse_confidence_score=80.0)
+    await setup(hass, entry)
+    assert len(events) == 1 and events[0].data["blocked"] is False
+    assert state(hass, "high_risk").attributes["error"] == "list is full"
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_a_score_cached_before_v2_2_has_no_details(hass, config_dir, cf, make_entry):
+    (config_dir / "cloudflare_checked_ips.json").write_text(
+        json.dumps({"203.0.113.10": {"checked": "2999-01-01T00:00:00+00:00", "score": 90}}))
+    events = async_capture_events(hass, f"{DOMAIN}_high_risk_ip")
+    entry = make_entry()
+    await setup(hass, entry)
+    high = state(hass, "high_risk")
+    assert high.state == "1" and high.attributes["high_risk_details"] == {"203.0.113.10": {"score": 90}}
+    assert high.attributes["abuseipdb_lookups_left"] is None
+    cf.abuse.assert_not_called()
+    assert events == []  # found by an earlier lookup: not announced again
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_rate_limit_shows_no_lookups_left(hass, config_dir, cf, make_entry):
+    from custom_components.cloudflare_abuse_monitor.api import AbuseIPDBRateLimited
+
+    cf.abuse.side_effect = AbuseIPDBRateLimited("429")
+    entry = make_entry()
+    await setup(hass, entry)
+    assert state(hass, "high_risk").attributes["abuseipdb_lookups_left"] == 0
     await hass.config_entries.async_unload(entry.entry_id)
 
 

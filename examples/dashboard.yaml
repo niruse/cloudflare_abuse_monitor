@@ -1,0 +1,616 @@
+# Example dashboard for one zone (example.com), drawn with button-card
+# (https://github.com/custom-cards/button-card, installed through HACS).
+#
+# How to use it:
+#   1. Create a dashboard, open it, select the pencil > three-dots menu > Raw configuration editor.
+#   2. Paste this file.
+#   3. Replace "cloudflare_example_com_example_com_" with the prefix of your own entities, and
+#      "example.com" with your zone. The prefix is shown under Settings > Devices & services >
+#      Cloudflare Abuse Monitor > the zone's device.
+#   4. For a second zone, copy the view and replace the prefix again.
+#
+# If your dashboard already has views, copy "button_card_templates" to the top of its raw configuration
+# and the view under "views".
+button_card_templates:
+  cf_tile:
+    show_name: false
+    show_state: false
+    show_icon: false
+    tap_action:
+      action: more-info
+    hold_action:
+      action: more-info
+    styles:
+      card:
+      - border-radius: 22px
+      - direction: ltr
+      - box-shadow: 0 6px 18px rgba(0,0,0,.18)
+      - padding: 14px
+      - height: 104px
+      - overflow: hidden
+      grid:
+      - grid-template-areas: '"top" "val" "lbl"'
+      - grid-template-rows: 1fr min-content min-content
+      - justify-items: start
+      - row-gap: 2px
+      custom_fields:
+        top:
+        - justify-self: stretch
+        - align-self: start
+        val:
+        - font-size: 22px
+        - font-weight: '900'
+        - line-height: '1.15'
+        - white-space: nowrap
+        - overflow: hidden
+        - text-overflow: ellipsis
+        - max-width: 100%
+        lbl:
+        - font-size: 12px
+        - opacity: '.8'
+        - white-space: nowrap
+        - overflow: hidden
+        - text-overflow: ellipsis
+        - max-width: 100%
+        bar:
+        - justify-self: stretch
+        - margin-top: 6px
+views:
+- title: Cloudflare
+  path: cloudflare
+  icon: mdi:cloud-lock-outline
+  type: sections
+  max_columns: 3
+  sections:
+  - type: grid
+    cards:
+    - type: heading
+      heading: Business · Visitors
+      icon: mdi:account-group-outline
+    - type: grid
+      columns: 2
+      square: false
+      cards:
+      - type: custom:button-card
+        template: cf_tile
+        entity: sensor.cloudflare_example_com_example_com_visitors_today
+        custom_fields:
+          top: |-
+            [[[
+            const c = '#29c5c8'; const bg = c.startsWith('var(') ? 'rgba(127,127,127,.15)' : c + '22';
+            return `<div style="display:flex;justify-content:space-between;align-items:flex-start;width:100%">
+              <div style="width:38px;height:38px;border-radius:12px;background:${bg};display:flex;align-items:center;justify-content:center">
+                <ha-icon icon="mdi:account-group-outline" style="--mdc-icon-size:22px;color:${c}"></ha-icon></div></div>`;
+             ]]]
+          val: |-
+            [[[
+            const ok = s => s && !['unknown','unavailable'].includes(s.state);
+            const num = s => ok(s) && !isNaN(parseFloat(s.state)) ? parseFloat(s.state) : null;
+            const ltr = t => '⁦' + t + '⁩';  // keep numbers+units in reading order
+            const v = num(entity); return v === null ? (ok(entity) ? entity.state : '—') : ltr(v.toLocaleString('en-US')); ]]]
+          lbl: Unique visitors today
+      - type: custom:button-card
+        template: cf_tile
+        entity: sensor.cloudflare_example_com_example_com_page_views_today
+        custom_fields:
+          top: |-
+            [[[
+            const c = '#3b82f6'; const bg = c.startsWith('var(') ? 'rgba(127,127,127,.15)' : c + '22';
+            return `<div style="display:flex;justify-content:space-between;align-items:flex-start;width:100%">
+              <div style="width:38px;height:38px;border-radius:12px;background:${bg};display:flex;align-items:center;justify-content:center">
+                <ha-icon icon="mdi:file-eye-outline" style="--mdc-icon-size:22px;color:${c}"></ha-icon></div></div>`;
+             ]]]
+          val: |-
+            [[[
+            const ok = s => s && !['unknown','unavailable'].includes(s.state);
+            const num = s => ok(s) && !isNaN(parseFloat(s.state)) ? parseFloat(s.state) : null;
+            const ltr = t => '⁦' + t + '⁩';  // keep numbers+units in reading order
+            const v = num(entity); return v === null ? (ok(entity) ? entity.state : '—') : ltr(v.toLocaleString('en-US')); ]]]
+          lbl: Page views today
+      - type: custom:button-card
+        template: cf_tile
+        entity: sensor.cloudflare_example_com_example_com_visitors_today
+        custom_fields:
+          top: |-
+            [[[
+            const c = (entity && entity.attributes && entity.attributes.visitors_change_7d_pct < 0) ? '#e5484d' : '#30a46c'; const bg = c.startsWith('var(') ? 'rgba(127,127,127,.15)' : c + '22';
+            return `<div style="display:flex;justify-content:space-between;align-items:flex-start;width:100%">
+              <div style="width:38px;height:38px;border-radius:12px;background:${bg};display:flex;align-items:center;justify-content:center">
+                <ha-icon icon="${(entity && entity.attributes && entity.attributes.visitors_change_7d_pct < 0) ? 'mdi:trending-down' : 'mdi:trending-up'}" style="--mdc-icon-size:22px;color:${c}"></ha-icon></div></div>`;
+             ]]]
+          val: |-
+            [[[
+            const ltr = t => '⁦' + t + '⁩';  // keep numbers+units in reading order
+            const v = entity && entity.attributes ? entity.attributes['visitors_change_7d_pct'] : null; return v === null || v === undefined ? '—' : ltr((v > 0 ? '+' : '') + v.toLocaleString('en-US') + '%'); ]]]
+          lbl: Visitors · week vs previous
+      - type: custom:button-card
+        template: cf_tile
+        entity: sensor.cloudflare_example_com_example_com_traffic_vs_usual
+        custom_fields:
+          top: |-
+            [[[
+            const c = '#f5a524'; const bg = c.startsWith('var(') ? 'rgba(127,127,127,.15)' : c + '22';
+            return `<div style="display:flex;justify-content:space-between;align-items:flex-start;width:100%">
+              <div style="width:38px;height:38px;border-radius:12px;background:${bg};display:flex;align-items:center;justify-content:center">
+                <ha-icon icon="mdi:chart-timeline-variant" style="--mdc-icon-size:22px;color:${c}"></ha-icon></div></div>`;
+             ]]]
+          val: |-
+            [[[
+            const ok = s => s && !['unknown','unavailable'].includes(s.state);
+            const num = s => ok(s) && !isNaN(parseFloat(s.state)) ? parseFloat(s.state) : null;
+            const ltr = t => '⁦' + t + '⁩';  // keep numbers+units in reading order
+            const v = num(entity); return v === null ? '—' : ltr(v + '%'); ]]]
+          lbl: Traffic vs a usual day
+    - type: custom:button-card
+      entity: sensor.cloudflare_example_com_example_com_visitors_today
+      show_name: false
+      show_icon: false
+      show_state: false
+      tap_action:
+        action: more-info
+        entity: sensor.cloudflare_example_com_example_com_visitors_today
+      hold_action:
+        action: none
+      custom_fields:
+        body: |-
+          [[[
+          const ltr = t => '⁦' + t + '⁩';  // keep numbers+units in reading order
+          const d = (entity && entity.attributes && entity.attributes.daily) || [];
+          if (!d.length) return `<div style="opacity:.7;font-size:13px">No data yet</div>`;
+          const max = Math.max(1, ...d.map(x => x['visitors'] || 0));
+          const bars = d.map(x => { const v = x['visitors'] || 0; const h = Math.max(2, Math.round(70 * v / max));
+            return `<div title="${x.date}: ${v}" style="flex:1;display:flex;align-items:flex-end;height:72px">
+              <div style="width:100%;height:${h}px;background:#29c5c8;border-radius:3px 3px 0 0;opacity:${x === d[d.length - 1] ? .55 : 1}"></div></div>`; }).join('');
+          const total = d.slice(0, -1).reduce((a, x) => a + (x['visitors'] || 0), 0);
+          return `<div style="text-align:left">
+            <div style="display:flex;justify-content:space-between;align-items:baseline"><b style="font-size:14px">Visitors per day</b>
+              <span style="font-size:12px;opacity:.7">30 days: ${ltr(total.toLocaleString('en-US'))}</span></div>
+            <div dir="ltr" style="display:flex;gap:2px;margin-top:8px">${bars}</div>
+            <div dir="ltr" style="display:flex;justify-content:space-between;font-size:11px;opacity:.6;margin-top:3px">
+              <span>${d[0].date.slice(5)}</span><span>Today</span></div></div>`; ]]]
+      styles:
+        card:
+        - border-radius: 22px
+        - direction: ltr
+        - box-shadow: 0 6px 18px rgba(0,0,0,.18)
+        - padding: 14px
+        grid:
+        - grid-template-areas: '"body"'
+        custom_fields:
+          body:
+          - justify-self: stretch
+          - white-space: normal
+    - type: custom:button-card
+      entity: sensor.cloudflare_example_com_example_com_visitors_today
+      show_name: false
+      show_icon: false
+      show_state: false
+      tap_action:
+        action: more-info
+        entity: sensor.cloudflare_example_com_example_com_visitors_today
+      hold_action:
+        action: none
+      custom_fields:
+        body: |-
+          [[[
+          const ltr = t => '⁦' + t + '⁩';  // keep numbers+units in reading order
+          const d = (entity && entity.attributes && entity.attributes.daily) || [];
+          if (!d.length) return `<div style="opacity:.7;font-size:13px">No data yet</div>`;
+          const max = Math.max(1, ...d.map(x => x['page_views'] || 0));
+          const bars = d.map(x => { const v = x['page_views'] || 0; const h = Math.max(2, Math.round(70 * v / max));
+            return `<div title="${x.date}: ${v}" style="flex:1;display:flex;align-items:flex-end;height:72px">
+              <div style="width:100%;height:${h}px;background:#3b82f6;border-radius:3px 3px 0 0;opacity:${x === d[d.length - 1] ? .55 : 1}"></div></div>`; }).join('');
+          const total = d.slice(0, -1).reduce((a, x) => a + (x['page_views'] || 0), 0);
+          return `<div style="text-align:left">
+            <div style="display:flex;justify-content:space-between;align-items:baseline"><b style="font-size:14px">Page views per day</b>
+              <span style="font-size:12px;opacity:.7">30 days: ${ltr(total.toLocaleString('en-US'))}</span></div>
+            <div dir="ltr" style="display:flex;gap:2px;margin-top:8px">${bars}</div>
+            <div dir="ltr" style="display:flex;justify-content:space-between;font-size:11px;opacity:.6;margin-top:3px">
+              <span>${d[0].date.slice(5)}</span><span>Today</span></div></div>`; ]]]
+      styles:
+        card:
+        - border-radius: 22px
+        - direction: ltr
+        - box-shadow: 0 6px 18px rgba(0,0,0,.18)
+        - padding: 14px
+        grid:
+        - grid-template-areas: '"body"'
+        custom_fields:
+          body:
+          - justify-self: stretch
+          - white-space: normal
+  - type: grid
+    cards:
+    - type: heading
+      heading: Health and security
+      icon: mdi:heart-pulse
+    - type: grid
+      columns: 2
+      square: false
+      cards:
+      - type: custom:button-card
+        template: cf_tile
+        entity: sensor.cloudflare_example_com_example_com_server_errors_today
+        custom_fields:
+          top: |-
+            [[[
+            const c = '#e5484d'; const bg = c.startsWith('var(') ? 'rgba(127,127,127,.15)' : c + '22';
+            return `<div style="display:flex;justify-content:space-between;align-items:flex-start;width:100%">
+              <div style="width:38px;height:38px;border-radius:12px;background:${bg};display:flex;align-items:center;justify-content:center">
+                <ha-icon icon="mdi:alert-circle-outline" style="--mdc-icon-size:22px;color:${c}"></ha-icon></div></div>`;
+             ]]]
+          val: |-
+            [[[
+            const ok = s => s && !['unknown','unavailable'].includes(s.state);
+            const num = s => ok(s) && !isNaN(parseFloat(s.state)) ? parseFloat(s.state) : null;
+            const ltr = t => '⁦' + t + '⁩';  // keep numbers+units in reading order
+            const v = num(entity); return v === null ? (ok(entity) ? entity.state : '—') : ltr(v.toLocaleString('en-US')); ]]]
+          lbl: Server errors (5xx) today
+      - type: custom:button-card
+        template: cf_tile
+        entity: sensor.cloudflare_example_com_example_com_server_errors_today
+        custom_fields:
+          top: |-
+            [[[
+            const c = '#f5a524'; const bg = c.startsWith('var(') ? 'rgba(127,127,127,.15)' : c + '22';
+            return `<div style="display:flex;justify-content:space-between;align-items:flex-start;width:100%">
+              <div style="width:38px;height:38px;border-radius:12px;background:${bg};display:flex;align-items:center;justify-content:center">
+                <ha-icon icon="mdi:link-variant-off" style="--mdc-icon-size:22px;color:${c}"></ha-icon></div></div>`;
+             ]]]
+          val: |-
+            [[[
+            const ltr = t => '⁦' + t + '⁩';  // keep numbers+units in reading order
+            const v = entity && entity.attributes ? entity.attributes['errors_4xx'] : null; return v === null || v === undefined ? '—' : ltr(v.toLocaleString('en-US') + ''); ]]]
+          lbl: 4xx errors today
+      - type: custom:button-card
+        template: cf_tile
+        entity: sensor.cloudflare_example_com_example_com_cache_ratio_today
+        custom_fields:
+          top: |-
+            [[[
+            const c = '#30a46c'; const bg = c.startsWith('var(') ? 'rgba(127,127,127,.15)' : c + '22';
+            return `<div style="display:flex;justify-content:space-between;align-items:flex-start;width:100%">
+              <div style="width:38px;height:38px;border-radius:12px;background:${bg};display:flex;align-items:center;justify-content:center">
+                <ha-icon icon="mdi:cached" style="--mdc-icon-size:22px;color:${c}"></ha-icon></div></div>`;
+             ]]]
+          val: |-
+            [[[
+            const ok = s => s && !['unknown','unavailable'].includes(s.state);
+            const num = s => ok(s) && !isNaN(parseFloat(s.state)) ? parseFloat(s.state) : null;
+            const ltr = t => '⁦' + t + '⁩';  // keep numbers+units in reading order
+            const v = num(entity); return v === null ? '—' : ltr(v + '%'); ]]]
+          lbl: Served from cache
+      - type: custom:button-card
+        template: cf_tile
+        entity: sensor.cloudflare_example_com_example_com_security_events_24h
+        custom_fields:
+          top: |-
+            [[[
+            const c = '#e5484d'; const bg = c.startsWith('var(') ? 'rgba(127,127,127,.15)' : c + '22';
+            return `<div style="display:flex;justify-content:space-between;align-items:flex-start;width:100%">
+              <div style="width:38px;height:38px;border-radius:12px;background:${bg};display:flex;align-items:center;justify-content:center">
+                <ha-icon icon="mdi:shield-search" style="--mdc-icon-size:22px;color:${c}"></ha-icon></div></div>`;
+             ]]]
+          val: |-
+            [[[
+            const ok = s => s && !['unknown','unavailable'].includes(s.state);
+            const num = s => ok(s) && !isNaN(parseFloat(s.state)) ? parseFloat(s.state) : null;
+            const ltr = t => '⁦' + t + '⁩';  // keep numbers+units in reading order
+            const v = num(entity); return v === null ? (ok(entity) ? entity.state : '—') : ltr(v.toLocaleString('en-US')); ]]]
+          lbl: Security events · 24 hours
+      - type: custom:button-card
+        template: cf_tile
+        entity: sensor.cloudflare_example_com_example_com_top_country_today
+        custom_fields:
+          top: |-
+            [[[
+            const c = '#3b82f6'; const bg = c.startsWith('var(') ? 'rgba(127,127,127,.15)' : c + '22';
+            return `<div style="display:flex;justify-content:space-between;align-items:flex-start;width:100%">
+              <div style="width:38px;height:38px;border-radius:12px;background:${bg};display:flex;align-items:center;justify-content:center">
+                <ha-icon icon="mdi:earth" style="--mdc-icon-size:22px;color:${c}"></ha-icon></div></div>`;
+             ]]]
+          val: |-
+            [[[
+            const ok = s => s && !['unknown','unavailable'].includes(s.state);
+            return ok(entity) ? entity.state : '—'; ]]]
+          lbl: Top country today
+      - type: custom:button-card
+        template: cf_tile
+        entity: sensor.cloudflare_example_com_example_com_ssl_mode
+        custom_fields:
+          top: |-
+            [[[
+            const c = (entity && entity.attributes && (entity.attributes.weak || []).length) ? '#f5a524' : '#30a46c'; const bg = c.startsWith('var(') ? 'rgba(127,127,127,.15)' : c + '22';
+            return `<div style="display:flex;justify-content:space-between;align-items:flex-start;width:100%">
+              <div style="width:38px;height:38px;border-radius:12px;background:${bg};display:flex;align-items:center;justify-content:center">
+                <ha-icon icon="mdi:lock-outline" style="--mdc-icon-size:22px;color:${c}"></ha-icon></div></div>`;
+             ]]]
+          val: |-
+            [[[
+            const w = (entity && entity.attributes && entity.attributes.weak) || [];
+            const he = {ssl: 'Weak SSL', min_tls_version: 'TLS ' + ((entity.attributes || {}).min_tls_version || '') + ' → 1.2',
+              always_use_https: 'HTTPS Off'};
+            return w.length ? w.map(k => he[k] || k).join(' · ') : 'OK'; ]]]
+          lbl: TLS settings (1.2+ advised)
+  - type: grid
+    cards:
+    - type: heading
+      heading: Cloudflare · example.com
+      icon: mdi:cloud-lock-outline
+    - type: custom:button-card
+      show_name: false
+      show_state: false
+      show_icon: false
+      tap_action:
+        action: more-info
+      hold_action:
+        action: more-info
+      custom_fields:
+        top: |-
+          [[[
+          const ok = s => s && !['unknown','unavailable'].includes(s.state);
+          const a = ['on'].includes(entity.state); const off = !ok(entity);
+          const c = a ? '#fff' : off ? 'var(--disabled-text-color)' : '#30a46c';
+          const i = a ? 'mdi:shield-alert' : 'mdi:shield-check';
+          return `<div style="width:38px;height:38px;border-radius:12px;background:${a ? 'rgba(255,255,255,.22)' : off ? 'rgba(127,127,127,.15)' : c + '22'};display:flex;align-items:center;justify-content:center">
+            <ha-icon icon="${i}" style="--mdc-icon-size:22px;color:${c}"></ha-icon></div>`; ]]]
+        val: |-
+          [[[
+          const ok = s => s && !['unknown','unavailable'].includes(s.state);
+          return ['on'].includes(entity.state) ? 'Active!' : ok(entity) ? 'Off' : 'Not connected'; ]]]
+        lbl: Under Attack
+      styles:
+        card:
+        - border-radius: 22px
+        - direction: ltr
+        - box-shadow: 0 6px 18px rgba(0,0,0,.18)
+        - padding: 14px
+        - height: 104px
+        - overflow: hidden
+        - background: '[[[ return [''on''].includes(entity.state) ? ''linear-gradient(135deg, #b3261e, #e5484d)'' : ''var(--ha-card-background, var(--card-background-color))'';
+            ]]]'
+        - color: '[[[ return [''on''].includes(entity.state) ? ''#fff'' : ''var(--primary-text-color)''; ]]]'
+        - animation: '[[[ return [''on''].includes(entity.state) ? ''pulse 1.4s ease-in-out infinite'' : ''none''; ]]]'
+        grid:
+        - grid-template-areas: '"top" "val" "lbl"'
+        - grid-template-rows: 1fr min-content min-content
+        - justify-items: start
+        - row-gap: 2px
+        custom_fields:
+          top:
+          - justify-self: stretch
+          - align-self: start
+          val:
+          - font-size: 22px
+          - font-weight: '900'
+          - line-height: '1.15'
+          - white-space: nowrap
+          - overflow: hidden
+          - text-overflow: ellipsis
+          - max-width: 100%
+          lbl:
+          - font-size: 12px
+          - opacity: '.8'
+          - white-space: nowrap
+          - overflow: hidden
+          - text-overflow: ellipsis
+          - max-width: 100%
+          bar:
+          - justify-self: stretch
+          - margin-top: 6px
+      entity: sensor.cloudflare_example_com_example_com_under_attack_mode
+      extra_styles: '@keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(229,72,77,.6) } 50% { box-shadow: 0 0 0 10px rgba(229,72,77,0) } }'
+    - type: grid
+      columns: 2
+      square: false
+      cards:
+      - type: custom:button-card
+        template: cf_tile
+        entity: sensor.cloudflare_example_com_example_com_traffic_summary
+        custom_fields:
+          top: |-
+            [[[
+            const c = '#29c5c8'; const bg = c.startsWith('var(') ? 'rgba(127,127,127,.15)' : c + '22';
+            return `<div style="display:flex;justify-content:space-between;align-items:flex-start;width:100%">
+              <div style="width:38px;height:38px;border-radius:12px;background:${bg};display:flex;align-items:center;justify-content:center">
+                <ha-icon icon="mdi:chart-box-outline" style="--mdc-icon-size:22px;color:${c}"></ha-icon></div></div>`;
+             ]]]
+          val: |-
+            [[[
+            const ok = s => s && !['unknown','unavailable'].includes(s.state);
+            const num = s => ok(s) && !isNaN(parseFloat(s.state)) ? parseFloat(s.state) : null;
+            const ltr = t => '⁦' + t + '⁩';  // keep numbers+units in reading order
+            const v = num(entity); return v === null ? (ok(entity) ? entity.state : '—') : ltr(v.toLocaleString('en-US')); ]]]
+          lbl: Requests today
+      - type: custom:button-card
+        template: cf_tile
+        entity: sensor.cloudflare_example_com_example_com_high_risk_ips
+        custom_fields:
+          top: |-
+            [[[
+            const c = '#e5484d'; const bg = c.startsWith('var(') ? 'rgba(127,127,127,.15)' : c + '22';
+            return `<div style="display:flex;justify-content:space-between;align-items:flex-start;width:100%">
+              <div style="width:38px;height:38px;border-radius:12px;background:${bg};display:flex;align-items:center;justify-content:center">
+                <ha-icon icon="mdi:alert-outline" style="--mdc-icon-size:22px;color:${c}"></ha-icon></div></div>`;
+             ]]]
+          val: |-
+            [[[
+            const ok = s => s && !['unknown','unavailable'].includes(s.state);
+            const num = s => ok(s) && !isNaN(parseFloat(s.state)) ? parseFloat(s.state) : null;
+            const ltr = t => '⁦' + t + '⁩';  // keep numbers+units in reading order
+            const v = num(entity); return v === null ? (ok(entity) ? entity.state : '—') : ltr(v.toLocaleString('en-US')); ]]]
+          lbl: High-risk IPs
+      - type: custom:button-card
+        template: cf_tile
+        entity: sensor.cloudflare_example_com_example_com_list_ips
+        custom_fields:
+          top: |-
+            [[[
+            const c = '#3b82f6'; const bg = c.startsWith('var(') ? 'rgba(127,127,127,.15)' : c + '22';
+            return `<div style="display:flex;justify-content:space-between;align-items:flex-start;width:100%">
+              <div style="width:38px;height:38px;border-radius:12px;background:${bg};display:flex;align-items:center;justify-content:center">
+                <ha-icon icon="mdi:format-list-bulleted" style="--mdc-icon-size:22px;color:${c}"></ha-icon></div></div>`;
+             ]]]
+          val: |-
+            [[[
+            const ok = s => s && !['unknown','unavailable'].includes(s.state);
+            const num = s => ok(s) && !isNaN(parseFloat(s.state)) ? parseFloat(s.state) : null;
+            const ltr = t => '⁦' + t + '⁩';  // keep numbers+units in reading order
+            const v = num(entity); return v === null ? (ok(entity) ? entity.state : '—') : ltr(v.toLocaleString('en-US')); ]]]
+          lbl: Blocked IPs
+      - type: custom:button-card
+        template: cf_tile
+        entity: sensor.cloudflare_example_com_example_com_skip_ips
+        custom_fields:
+          top: |-
+            [[[
+            const c = 'var(--secondary-text-color)'; const bg = c.startsWith('var(') ? 'rgba(127,127,127,.15)' : c + '22';
+            return `<div style="display:flex;justify-content:space-between;align-items:flex-start;width:100%">
+              <div style="width:38px;height:38px;border-radius:12px;background:${bg};display:flex;align-items:center;justify-content:center">
+                <ha-icon icon="mdi:minus-circle-outline" style="--mdc-icon-size:22px;color:${c}"></ha-icon></div></div>`;
+             ]]]
+          val: |-
+            [[[
+            const ok = s => s && !['unknown','unavailable'].includes(s.state);
+            const num = s => ok(s) && !isNaN(parseFloat(s.state)) ? parseFloat(s.state) : null;
+            const ltr = t => '⁦' + t + '⁩';  // keep numbers+units in reading order
+            const v = num(entity); return v === null ? (ok(entity) ? entity.state : '—') : ltr(v.toLocaleString('en-US')); ]]]
+          lbl: Skipped IPs
+      - type: custom:button-card
+        template: cf_tile
+        entity: sensor.cloudflare_example_com_example_com_blocked_requests_24h
+        custom_fields:
+          top: |-
+            [[[
+            const c = '#8b5cf6'; const bg = c.startsWith('var(') ? 'rgba(127,127,127,.15)' : c + '22';
+            return `<div style="display:flex;justify-content:space-between;align-items:flex-start;width:100%">
+              <div style="width:38px;height:38px;border-radius:12px;background:${bg};display:flex;align-items:center;justify-content:center">
+                <ha-icon icon="mdi:shield-off-outline" style="--mdc-icon-size:22px;color:${c}"></ha-icon></div></div>`;
+             ]]]
+          val: |-
+            [[[
+            const ok = s => s && !['unknown','unavailable'].includes(s.state);
+            const num = s => ok(s) && !isNaN(parseFloat(s.state)) ? parseFloat(s.state) : null;
+            const ltr = t => '⁦' + t + '⁩';  // keep numbers+units in reading order
+            const v = num(entity); return v === null ? (ok(entity) ? entity.state : '—') : ltr(v.toLocaleString('en-US')); ]]]
+          lbl: Blocked requests · 24 hours
+      - type: custom:button-card
+        template: cf_tile
+        entity: sensor.cloudflare_example_com_example_com_high_risk_ips
+        custom_fields:
+          top: |-
+            [[[
+            const left = entity && entity.attributes ? entity.attributes.abuseipdb_lookups_left : null; const c = (left === null || left === undefined) ? 'var(--secondary-text-color)' : (left < 50 ? '#e5484d' : '#30a46c'); const bg = c.startsWith('var(') ? 'rgba(127,127,127,.15)' : c + '22';
+            return `<div style="display:flex;justify-content:space-between;align-items:flex-start;width:100%">
+              <div style="width:38px;height:38px;border-radius:12px;background:${bg};display:flex;align-items:center;justify-content:center">
+                <ha-icon icon="mdi:database-search-outline" style="--mdc-icon-size:22px;color:${c}"></ha-icon></div></div>`;
+             ]]]
+          val: |-
+            [[[
+            const ltr = t => '⁦' + t + '⁩';  // keep numbers+units in reading order
+            const a = (entity && entity.attributes) || {};
+            const left = a.abuseipdb_lookups_left;
+            if (left === null || left === undefined) return '—';
+            const lim = a.abuseipdb_daily_limit;
+            return ltr(Number(left).toLocaleString('en-US') + (lim ? ' / ' + Number(lim).toLocaleString('en-US') : '')); ]]]
+          lbl: AbuseIPDB lookups left today
+    - type: custom:button-card
+      entity: sensor.cloudflare_example_com_example_com_blocked_requests_24h
+      show_name: false
+      show_icon: false
+      show_state: false
+      tap_action:
+        action: more-info
+        entity: sensor.cloudflare_example_com_example_com_blocked_requests_24h
+      hold_action:
+        action: none
+      custom_fields:
+        body: |-
+          [[[
+          const ok = s => s && !['unknown','unavailable'].includes(s.state);
+          const ltr = t => '⁦' + t + '⁩';  // keep numbers+units in reading order
+          const a = (entity && entity.attributes) || {};
+          const hr = states['sensor.cloudflare_example_com_example_com_high_risk_ips'];
+          const det = (hr && hr.attributes && hr.attributes.high_risk_details) || {};
+          const esc = t => String(t).replace(/[&<>"]/g, ch => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[ch]));
+          const row = (l, r) => `<div dir="ltr" style="display:flex;justify-content:space-between;gap:10px;font-size:13px;padding:3px 0">
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${l}</span><b>${r}</b></div>`;
+          const block = (title, items) => items.length ? `<div style="font-size:12px;opacity:.7;margin-top:10px">${title}</div>` + items.join('') : '';
+          const list = k => (a[k] || []).map(x => row(esc(x.name), ltr(Number(x.count).toLocaleString('en-US'))));
+          const risky = Object.keys(det).slice(0, 5).map(ip => { const d = det[ip] || {};
+            return row(esc(ip) + (d.country ? ' · ' + esc(d.country) : '') + (d.isp ? ' · ' + esc(d.isp) : ''),
+              (d.score === null || d.score === undefined) ? '—' : ltr(d.score + '%')); });
+          const total = ok(entity) ? ltr(Number(entity.state).toLocaleString('en-US') + (a.blocked_capped ? '+' : '')) : '—';
+          const body = block('Addresses blocked most', list('blocked_top_ips')) + block('Countries', list('blocked_top_countries'))
+            + block('Paths', list('blocked_top_paths')) + block('High-risk addresses (AbuseIPDB score)', risky);
+          return `<div style="text-align:left">
+            <div style="display:flex;justify-content:space-between;align-items:baseline"><b style="font-size:14px">Blocked · 24 hours</b>
+              <span style="font-size:12px;opacity:.7">${total}</span></div>
+            ${body || `<div style="opacity:.7;font-size:13px;margin-top:6px">No requests were blocked in the last 24 hours</div>`}</div>`; ]]]
+      styles:
+        card:
+        - border-radius: 22px
+        - direction: ltr
+        - box-shadow: 0 6px 18px rgba(0,0,0,.18)
+        - padding: 14px
+        grid:
+        - grid-template-areas: '"body"'
+        custom_fields:
+          body:
+          - justify-self: stretch
+          - white-space: normal
+    - type: custom:button-card
+      name: Under Attack
+      icon: mdi:shield-sync-outline
+      show_state: false
+      tap_action:
+        action: call-service
+        service: switch.toggle
+        target:
+          entity_id: switch.cloudflare_example_com_example_com_under_attack
+        confirmation:
+          text: 'example.com: Switch Under Attack? This changes the live site.'
+      hold_action:
+        action: none
+      styles:
+        card:
+        - border-radius: 22px
+        - direction: ltr
+        - box-shadow: 0 6px 18px rgba(0,0,0,.18)
+        - height: 52px
+        - background: 'linear-gradient(135deg, #1e293b, #334155)'
+        - color: '#fff'
+        - padding: 0 14px
+        grid:
+        - grid-template-areas: '"i n" "i l"'
+        - grid-template-columns: 34px 1fr
+        - grid-template-rows: min-content min-content
+        - align-content: center
+        - align-items: center
+        - column-gap: 10px
+        - row-gap: 2px
+        - height: 100%
+        img_cell:
+        - width: 34px
+        - height: 34px
+        - justify-content: center
+        - align-self: center
+        icon:
+        - width: 26px
+        - color: '#fff'
+        name:
+        - justify-self: start
+        - align-self: center
+        - font-weight: '800'
+        - font-size: 16px
+        label:
+        - justify-self: start
+        - font-size: 12px
+        - opacity: '.9'
+        - white-space: nowrap
+        - overflow: hidden
+        - text-overflow: ellipsis
+        - max-width: 100%
+      label: '[[[ return entity.state === ''on'' ? ''On · tap to turn off'' : ''Off · tap to turn on''; ]]]'
+      show_label: true
+      entity: switch.cloudflare_example_com_example_com_under_attack

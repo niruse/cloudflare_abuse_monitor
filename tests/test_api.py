@@ -130,6 +130,21 @@ def test_verify_returns_status():
     assert req.call_args.kwargs["headers"]["Authorization"] == f"Bearer {TOKEN}"
 
 
+def test_abuseipdb_lookup_carries_the_details_and_the_quota():
+    r = response({"data": {"abuseConfidenceScore": 97, "countryCode": "CN", "usageType": "Data Center/Web Hosting/Transit",
+                           "isp": "Example Hosting", "domain": "example.net", "totalReports": 12,
+                           "lastReportedAt": "2026-10-01T10:00:00+00:00"}})
+    r.headers = {"X-RateLimit-Limit": "1000", "X-RateLimit-Remaining": "993"}
+    with patch.object(api.requests, "get", return_value=r):
+        got = api.check_abuse_ip("203.0.113.1", "key")
+    assert got["abuse_confidence_score"] == 97 and got["isp"] == "Example Hosting" and got["totalReports"] == 12
+    assert (got["quota_limit"], got["quota_remaining"]) == (1000, 993)
+    r.headers = {}
+    with patch.object(api.requests, "get", return_value=r):
+        got = api.check_abuse_ip("203.0.113.1", "key")
+    assert got["quota_limit"] is None and got["quota_remaining"] is None
+
+
 def test_abuseipdb_429_is_rate_limited():
     with patch.object(api.requests, "get", return_value=response({}, status=429)):
         with pytest.raises(api.AbuseIPDBRateLimited):

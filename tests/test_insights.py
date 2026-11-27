@@ -1,5 +1,6 @@
 """v2.0 insights: visitors, page views, errors, cache, countries, security events and the zone's TLS settings."""
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from custom_components.cloudflare_abuse_monitor import api
 from custom_components.cloudflare_abuse_monitor.coordinator import INSIGHTS_EVERY, insight_sections
@@ -28,6 +29,8 @@ def zone_answer():
         "errors": [{"count": 6, "dimensions": {"clientRequestPath": "/old", "edgeResponseStatus": 404}}],
         "events": [{"action": "block", "clientCountryName": "CN", "clientRequestPath": "/wp-login.php"}] * 3
                   + [{"action": "managed_challenge", "clientCountryName": "RU", "clientRequestPath": "/"}],
+        "blocked": [{"clientIP": "203.0.113.66", "clientCountryName": "CN", "clientRequestPath": "/wp-login.php"}] * 3
+                   + [{"clientIP": "203.0.113.67", "clientCountryName": "RU", "clientRequestPath": "/xmlrpc.php"}],
     }
 
 
@@ -48,6 +51,26 @@ def test_summary_of_today_and_the_weeks_before():
     assert got["security_by_action"] == [{"name": "block", "count": 3}, {"name": "managed_challenge", "count": 1}]
     assert got["security_top_paths"][0] == {"name": "/wp-login.php", "count": 3}
     assert len(got["daily"]) == 16
+
+
+def test_blocked_requests_are_counted_by_address_country_and_path():
+    got = api.summarise_insights(zone_answer(), NOW)
+    assert got["blocked_requests_24h"] == 4 and got["blocked_ips_24h"] == 2 and not got["blocked_capped"]
+    assert got["blocked_top_ips"] == [{"name": "203.0.113.66", "count": 3}, {"name": "203.0.113.67", "count": 1}]
+    assert got["blocked_top_countries"][0] == {"name": "CN", "count": 3}
+    assert got["blocked_top_paths"][0] == {"name": "/wp-login.php", "count": 3}
+    full = api.summarise_insights({"blocked": [{"clientIP": "203.0.113.66"}] * api.SECURITY_EVENTS_LIMIT}, NOW)
+    assert full["blocked_requests_24h"] == api.SECURITY_EVENTS_LIMIT and full["blocked_capped"]
+
+
+def test_blocked_requests_are_read_apart_from_the_logged_visitors():
+    """The Skip rule logs every visitor, so the 1,000 events of the day are mostly "skip": the blocked
+    requests have a query of their own, filtered on the server."""
+    with patch.object(api, "_graphql_zone", return_value={}) as graphql:
+        api.fetch_insights({}, "0123456789abcdef0123456789abcdef", NOW)
+    query = " ".join(graphql.call_args.args[1].split())
+    assert 'blocked: firewallEventsAdaptive(limit: 1000, filter: {datetime_geq: "2026-10-14T12:00:00Z", ' \
+           'datetime_lt: "2026-10-15T12:00:00Z", action: "block"})' in query
 
 
 def test_a_quiet_zone_is_zeros_not_errors():
@@ -87,6 +110,8 @@ async def test_insight_sensors_and_their_pace(hass, config_dir, cf, make_entry, 
     assert find("top_country_today").state == "IL"
     assert find("ssl_mode").state == "full" and find("ssl_mode").attributes["weak"] == ["min_tls_version"]
     assert find("security_events_24h").attributes["security_top_paths"][0]["name"] == "/wp-login.php"
+    assert find("blocked_requests_24h").state == "4"
+    assert find("blocked_requests_24h").attributes["blocked_top_ips"][0] == {"name": "203.0.113.66", "count": 3}
     assert cf.insights.call_count == 1 and cf.settings.call_count == 1
     # the next cycles reuse them until INSIGHTS_EVERY has passed
     coordinator = coord(entry)
