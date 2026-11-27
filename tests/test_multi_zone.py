@@ -185,7 +185,7 @@ async def test_each_zone_is_its_own_device_with_its_own_entities(hass, config_di
     by_device = {}
     for e in entities:
         by_device.setdefault(e.device_id, []).append(e)
-    assert sorted(len(v) for v in by_device.values()) == [14, 14]
+    assert sorted(len(v) for v in by_device.values()) == [15, 15]
     assert er.async_get(hass).async_get_entity_id("switch", DOMAIN, f"{ZONE_C['id']}_{ZONE_C['id']}_under_attack_switch")
     # Each zone polls its own zone id and its own account's list.
     assert sorted(c.args[1] for c in cf.traffic.call_args_list) == sorted([ZONE_A["id"], ZONE_C["id"]])
